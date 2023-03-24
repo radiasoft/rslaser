@@ -1,2 +1,9 @@
-# rslaser-new
-Integrated modeling of CPA crystal-based laser amplifiers
+### Integrated modeling of CPA crystal-based laser amplifiers
+
+Learn more at https://github.com/radiasoft/rslaser.
+
+#### License
+
+License: http://www.apache.org/licenses/LICENSE-2.0.html
+
+Copyright (c) 2020-2023 RadiaSoft LLC.  All Rights Reserved.
