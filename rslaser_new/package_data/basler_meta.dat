@@ -1,0 +1,9 @@
+diagnostic_name:Basler ace
+diagnostic_code:acA720-290gm
+diagnostic_resolution:VGA
+image_size_h_mm:5.0
+image_size_v_mm:3.7
+pixel_number_h:720
+pixel_number_v:540
+pixel_size_h_microns:6.9
+pixel_size_v_microns:6.9
