@@ -8,7 +8,7 @@ from pykern.pkdebug import pkdp, pkdlog
 from pykern.pkcollections import PKDict
 import pykern.pkunit
 import pytest
-from rslaser_new.pulse import pulse
+from rslaser.pulse import pulse
 import scipy.constants as const
 
 

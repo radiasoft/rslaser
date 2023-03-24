@@ -4,8 +4,8 @@ from pykern.pkdebug import pkdp, pkdlog
 from pykern.pkcollections import PKDict
 import pykern.pkunit
 import pytest
-from rslaser_new.optics import element, lens, drift, crystal
-from rslaser_new.pulse import pulse
+from rslaser.optics import element, lens, drift, crystal
+from rslaser.pulse import pulse
 import srwlib
 
 

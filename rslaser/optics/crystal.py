@@ -11,9 +11,9 @@ import srwlib
 import scipy.constants as const
 from scipy.interpolate import RectBivariateSpline
 from rsmath import lct as rslct
-from rslaser_new.utils.validator import ValidatorBase
-from rslaser_new.utils import srwl_uti_data as srwutil
-from rslaser_new.optics.element import ElementException, Element
+from rslaser.utils.validator import ValidatorBase
+from rslaser.utils import srwl_uti_data as srwutil
+from rslaser.optics.element import ElementException, Element
 
 _N_SLICE_DEFAULT = 50
 _N0_DEFAULT = 1.75

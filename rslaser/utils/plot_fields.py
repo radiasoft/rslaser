@@ -9,7 +9,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pykern.pkdebug import pkdc
 import numpy as np
 
-import rslaser_new.utils.plot_tools as rspt
+import rslaser.utils.plot_tools as rspt
 
 
 def plot_1d_x(_xArr, _pulse, _ax, _y=0.0, _z=0.0, _t=0.0, _time_explicit=False):

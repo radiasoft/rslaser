@@ -9,10 +9,10 @@ import numpy as np
 from pykern.pkdebug import pkdp, pkdlog
 from pykern.pkcollections import PKDict
 from numpy.polynomial.hermite import hermval
-import rslaser_new.optics.wavefront as rswf
+import rslaser.optics.wavefront as rswf
 import rsmath.const as rsc
-import rslaser_new.utils.unit_conversion as units
-import rslaser_new.utils.srwl_uti_data as srwutil
+import rslaser.utils.unit_conversion as units
+import rslaser.utils.srwl_uti_data as srwutil
 import scipy.constants as const
 import scipy.ndimage as ndi
 from scipy.interpolate import RectBivariateSpline
@@ -24,7 +24,7 @@ from skimage import img_as_float
 import scipy.optimize as opt
 import srwlib
 from srwlib import srwl
-from rslaser_new.utils.validator import ValidatorBase
+from rslaser.utils.validator import ValidatorBase
 import matplotlib.pyplot as plt
 
 _LASER_PULSE_DEFAULTS = PKDict(

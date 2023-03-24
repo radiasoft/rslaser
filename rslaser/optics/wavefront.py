@@ -1,6 +1,6 @@
 import math
-from rslaser_new.utils.validator import ValidatorBase
-from rslaser_new.pulse import pulse
+from rslaser.utils.validator import ValidatorBase
+from rslaser.pulse import pulse
 import srwlib
 import numpy as np
 from srwlib import *

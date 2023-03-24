@@ -3,4 +3,4 @@ include LICENSE
 include README.md
 recursive-include docs *
 recursive-include tests *
-recursive-include rslaser_new/package_data *
+recursive-include rslaser/package_data *

@@ -10,4 +10,4 @@ import pytest
 
 
 def test_1():
-    import rslaser_new
+    import rslaser

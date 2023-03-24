@@ -8,15 +8,13 @@ from pykern.pkdebug import pkdp, pkdlog
 from pykern.pkcollections import PKDict
 import pykern.pkunit
 import pytest
-from rslaser_new.pulse import pulse
+from rslaser.pulse import pulse
 import scipy
-import rslaser_new
+import rslaser
 import srwlib
 
 
-_PACKAGE_DATA_DIR = rslaser_new.pkg_resources.resource_filename(
-    "rslaser_new", "package_data"
-)
+_PACKAGE_DATA_DIR = rslaser.pkg_resources.resource_filename("rslaser", "package_data")
 
 
 def pulse_instantiation_test(pulse, field):
