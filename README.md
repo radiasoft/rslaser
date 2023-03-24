@@ -1,6 +1,6 @@
 ### Integrated modeling of CPA crystal-based laser amplifiers
 
-Learn more at https://github.com/radiasoft/rslaser.
+Learn more at https://github.com/radiasoft/rslase_new.
 
 #### License
 

@@ -1,0 +1,6 @@
+# OVERWRITTEN by pykern.pksetup every "python setup.py"
+include LICENSE
+include README.md
+recursive-include docs *
+recursive-include tests *
+recursive-include rslaser_new/package_data *
