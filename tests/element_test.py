@@ -1,4 +1,4 @@
-u"""Tests for Crystal and CrystalSlice
+"""Tests for Crystal and CrystalSlice
 """
 from pykern.pkdebug import pkdp, pkdlog
 from pykern.pkcollections import PKDict
@@ -12,13 +12,15 @@ import srwlib
 def test_instantiation01():
     crystal.Crystal()
     with pykern.pkunit.pkexcept(element.ElementException):
-        crystal.Crystal('fail')
+        crystal.Crystal("fail")
     with pykern.pkunit.pkexcept(element.ElementException):
         crystal.Crystal(PKDict(slice_params=PKDict()))
     c = crystal.Crystal()
     for s in c.slice:
-        if s.length != c.length/c.nslice:
-            pykern.pkunit.pkfail('CrystalSlice had length not equal to Crystal wrapper length/nslice')
+        if s.length != c.length / c.nslice:
+            pykern.pkunit.pkfail(
+                "CrystalSlice had length not equal to Crystal wrapper length/nslice"
+            )
 
 
 def test_crystal_nslice():
@@ -33,7 +35,9 @@ def crystal_slice_prop_test(prop_type):
     p = pulse.LaserPulse()
     p = c.propagate(p, prop_type)
     if type(p) != pulse.LaserPulse:
-        pykern.pkunit.pkfail('Crystal slice propagaition failed to return LaserPulse type')
+        pykern.pkunit.pkfail(
+            "Crystal slice propagaition failed to return LaserPulse type"
+        )
 
 
 def test_instantiation02():
@@ -42,14 +46,14 @@ def test_instantiation02():
 
 def test_propagation():
     with pykern.pkunit.pkexcept(element.ElementException):
-        crystal_slice_prop_test('default')
+        crystal_slice_prop_test("default")
     with pykern.pkunit.pkexcept(NotImplementedError):
-        crystal_slice_prop_test('attenuate')
+        crystal_slice_prop_test("attenuate")
     with pykern.pkunit.pkexcept(NotImplementedError):
-        crystal_slice_prop_test('placeholder')
+        crystal_slice_prop_test("placeholder")
     c = crystal.CrystalSlice()
     with pykern.pkunit.pkexcept(KeyError):
-        c.propagate(pulse.LaserPulse(), 'should raise')
+        c.propagate(pulse.LaserPulse(), "should raise")
 
 
 def test_prop_with_gain():
@@ -64,16 +68,16 @@ def test_prop_with_gain():
         )
         p = pulse.LaserPulse(
             PKDict(
-                nx_slice = 32,
-                ny_slice = 32,
+                nx_slice=32,
+                ny_slice=32,
             )
         )
         c.propagate(p, prop_type, calc_gain=True)
         w = p.slice_wfr(0)
-        i = srwlib.array('f', [0]*w.mesh.nx*w.mesh.ny)
+        i = srwlib.array("f", [0] * w.mesh.nx * w.mesh.ny)
         srwlib.srwl.CalcIntFromElecField(i, w, 6, 0, 3, w.mesh.eStart, 0, 0)
         pykern.pkunit.file_eq(
-            data_dir.join(prop_type+"_intensity.ndiff"),
+            data_dir.join(prop_type + "_intensity.ndiff"),
             actual=str(i),
         )
 
@@ -89,10 +93,7 @@ def test_propagation05():
     d = drift.Drift(0.01)
     p = pulse.LaserPulse()
     d.propagate(p)
-    trigger_prop_fail(
-        drift.Drift(0.01).propagate,
-        pulse.LaserPulse()
-        )
+    trigger_prop_fail(drift.Drift(0.01).propagate, pulse.LaserPulse())
 
 
 def test_instantiation04():
@@ -102,14 +103,11 @@ def test_instantiation04():
 def test_propagation06():
     l = lens.Lens(0.2)
     l.propagate(pulse.LaserPulse())
-    trigger_prop_fail(
-        lens.Lens(0.01).propagate,
-        pulse.LaserPulse()
-        )
+    trigger_prop_fail(lens.Lens(0.01).propagate, pulse.LaserPulse())
+
 
 def trigger_prop_fail(prop_func, pulse):
     with pykern.pkunit.pkexcept(
-        element.ElementException,
-        'Invalid element="should raise" should have raised'
-        ):
-        prop_func(pulse, 'should raise')
+        element.ElementException, 'Invalid element="should raise" should have raised'
+    ):
+        prop_func(pulse, "should raise")

@@ -14,7 +14,9 @@ import rslaser_new
 import srwlib
 
 
-_PACKAGE_DATA_DIR = rslaser_new.pkg_resources.resource_filename("rslaser_new", "package_data")
+_PACKAGE_DATA_DIR = rslaser_new.pkg_resources.resource_filename(
+    "rslaser_new", "package_data"
+)
 
 
 def pulse_instantiation_test(pulse, field):
@@ -121,8 +123,10 @@ def test_from_file():
         pulse_inputs,
         files=f,
     ).slice_wfr(0)
-    intensity = srwlib.array('f', [0]*wavefront.mesh.nx*wavefront.mesh.ny)
-    srwlib.srwl.CalcIntFromElecField(intensity, wavefront, 6, 0, 3, wavefront.mesh.eStart, 0, 0)
+    intensity = srwlib.array("f", [0] * wavefront.mesh.nx * wavefront.mesh.ny)
+    srwlib.srwl.CalcIntFromElecField(
+        intensity, wavefront, 6, 0, 3, wavefront.mesh.eStart, 0, 0
+    )
     pkunit.file_eq(
         data_dir.join("2d_wf_intensity.ndiff"),
         actual=str(intensity),

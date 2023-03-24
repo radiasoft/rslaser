@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-u"""Front-end command line for :mod:`rslaser_new`.
+"""Front-end command line for :mod:`rslaser_new`.
 
 See :mod:`pykern.pkcli` for how this module is used.
 
@@ -12,8 +12,8 @@ import sys
 
 
 def main():
-    return pkcli.main('rslaser_new')
+    return pkcli.main("rslaser_new")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

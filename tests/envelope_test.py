@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-u"""Tests for LaserPulseEnvelope
+"""Tests for LaserPulseEnvelope
 """
 from __future__ import absolute_import, division, print_function
 import math
@@ -17,15 +17,12 @@ def test_instantiation():
     with pykern.pkunit.pkexcept(pulse.InvalidLaserPulseInputError):
         pulse.LaserPulseEnvelope(1)
     with pykern.pkunit.pkexcept(pulse.InvalidLaserPulseInputError):
-        pulse.LaserPulseEnvelope(PKDict(test='test'))
+        pulse.LaserPulseEnvelope(PKDict(test="test"))
 
 
 def test_eval_ex():
     e = pulse.LaserPulseEnvelope()
-    e.evaluate_envelope_ex(
-        np.random.rand(12),
-        np.random.rand(12),
-        0.1)
+    e.evaluate_envelope_ex(np.random.rand(12), np.random.rand(12), 0.1)
     e.evaluate_envelope_ex(1, 2, 3)
     with pykern.pkunit.pkexcept(TypeError):
-        e.evaluate_envelope_ex('should fail')
+        e.evaluate_envelope_ex("should fail")
