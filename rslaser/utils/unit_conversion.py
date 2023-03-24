@@ -4,7 +4,7 @@ Copyright (c) 2021 RadiaSoft LLC. All rights reserved
 """
 import math
 
-from rslaser_new.utils.string_tools import removeWhitespace
+from rslaser.utils.string_tools import removeWhitespace
 import scipy.constants as const
 
 # How to use:

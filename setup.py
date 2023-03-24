@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""rslaser_new setup script
+"""rslaser setup script
 
 :copyright: Copyright (c) 2020-2022 RadiaSoft LLC.  All Rights Reserved.
 :license: http://www.apache.org/licenses/LICENSE-2.0.html
@@ -7,7 +7,7 @@
 from pykern import pksetup
 
 pksetup.setup(
-    name="rslaser_new",
+    name="rslaser",
     author="RadiaSoft LLC",
     author_email="pip@radiasoft.net",
     description="A Python library for modeling chirped pulse amplifiers in high-power short-pulse lasers",
@@ -19,7 +19,7 @@ pksetup.setup(
         "scipy",
     ],
     license="http://www.apache.org/licenses/LICENSE-2.0.html",
-    url="https://github.com/radiasoft/rslaser_new",
+    url="https://github.com/radiasoft/rslaser",
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",
         "Environment :: Console",

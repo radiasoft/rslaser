@@ -1,12 +1,12 @@
-Welcome to rslaser_new
+Welcome to rslaser
 =================
 
-rslaser_new
+rslaser
 
 .. toctree::
    :maxdepth: 2
 
-   rslaser_new
+   rslaser
    modules
 
 Indices and tables

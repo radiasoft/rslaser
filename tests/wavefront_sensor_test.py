@@ -13,8 +13,8 @@ import array
 import pytest
 import copy
 import srwlib
-from rslaser_new.pulse import pulse
-from rslaser_new.optics.wavefront import (
+from rslaser.pulse import pulse
+from rslaser.optics.wavefront import (
     WavefrontSensor,
     InvalidWaveFrontSensorInputError,
 )

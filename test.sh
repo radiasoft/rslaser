@@ -1,4 +1,4 @@
 #!/bin/bash
 set -eou pipefail
-pykern fmt diff rslaser_new tests setup.py
+pykern fmt diff rslaser tests setup.py
 pykern test
