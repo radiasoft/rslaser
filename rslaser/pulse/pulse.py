@@ -345,7 +345,7 @@ class LaserPulse(ValidatorBase):
                 phase[location] = scaling_fn(
                     index, phase_2d.n2_max[location], phase_2d.n2_0[location]
                 )
-
+            
             e_norm = np.sqrt(2.0 * intensity / (const.c * const.epsilon_0))
             re_ex = np.multiply(e_norm, np.cos(phase))
             im_ex = np.multiply(e_norm, np.sin(phase))
@@ -359,10 +359,35 @@ class LaserPulse(ValidatorBase):
 
         return self
 
-    def set_pulse_direction(self, new_direction):
+    def ideal_mirror_180(self):
         # 0.0 corresponds to 'right' or 'x=0,y=0,z' or 'forward'
-        # new_direction should be relative to this
-        self.pulse_direction = new_direction
+        if self.pulse_direction==0.0:
+            self.pulse_direction = 180.0
+        elif self.pulse_direction==180.0:
+            self.pulse_direction = 0.0
+        
+        for laser_index_i in np.arange(self.nslice):
+            thisSlice = self.slice[laser_index_i]
+
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
+                thisSlice.wfr
+            )
+        
+            # E_f (x,y) = E_i (-x,-y)
+            new_re_ex_2d = np.flip(re_ex_2d)
+            new_im_ex_2d = np.flip(im_ex_2d)
+            new_re_ey_2d = np.flip(re_ey_2d)
+            new_im_ey_2d = np.flip(im_ey_2d)
+            
+            thisSlice.wfr = srwutil.make_wavefront(
+                new_re_ex_2d,
+                new_im_ex_2d,
+                new_re_ey_2d,
+                new_im_ey_2d,
+                thisSlice.photon_e_ev,
+                thisSlice.initial_laser_xy.x,
+                thisSlice.initial_laser_xy.y,
+            )
 
     def _validate_params(self, input_params, files):
         # if files and input_params.nslice > 1:
