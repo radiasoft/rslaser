@@ -43,7 +43,6 @@ _LASER_PULSE_DEFAULTS = PKDict(
     poltype=1,
     mx=0,
     my=0,
-    pad_factor=1.0,
 )
 _ENVELOPE_DEFAULTS = PKDict(
     w0=0.1,
@@ -538,43 +537,15 @@ class LaserPulseSlice(ValidatorBase):
                 ccd_data
             ), "ERROR -- WFS and CCD data have diferent shapes!!"
 
-            nx_wfs = np.shape(wfs_data)[0]
-            ny_wfs = np.shape(wfs_data)[1]
+            nx = np.shape(wfs_data)[0]
+            ny = np.shape(wfs_data)[1]
             assert (
-                nx_wfs == ny_wfs
+                nx == ny
             ), "ERROR -- data is not square"  # Add method to square data if it is larger than 64x64?
-
-            # pad the data to increase the initial range (pad wfs data with array edge, pad ccd data with zeros)
-            pad_factor = params.pad_factor
-            if pad_factor > 1:
-                n_init = np.shape(wfs_data)[0]  # assumes nx = ny for wfs and ccd
-                nx = int(nx_wfs * pad_factor)
-                ny = int(ny_wfs * pad_factor)
-
-                wfs_data = np.pad(
-                    wfs_data,
-                    (
-                        (int((nx - n_init) / 2), int((nx - n_init) / 2)),
-                        (int((ny - n_init) / 2), int((ny - n_init) / 2)),
-                    ),
-                    mode="edge",
-                )
-                ccd_data = np.pad(
-                    ccd_data,
-                    (
-                        (int((nx - n_init) / 2), int((nx - n_init) / 2)),
-                        (int((ny - n_init) / 2), int((ny - n_init) / 2)),
-                    ),
-                    mode="constant",
-                )
-                ccd_data = gaussian_pad(ccd_data)
 
             # convert from microns to radians
             rad_per_micron = math.pi / lambda0_micron
             wfs_data *= rad_per_micron
-
-            nx = np.shape(wfs_data)[0]
-            ny = np.shape(wfs_data)[1]
 
             # create the x,y arrays with physical units based on the diagnostic pixel dimensions
             x_max = 0.5 * (nx + 1.0) * pixel_size_h * 1.0e-6  # [m]
