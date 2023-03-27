@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 
 _LASER_PULSE_DEFAULTS = PKDict(
     nslice=3,
+    pulse_direction=0.0, #0 corresponds to 'right' or 'z' or 'forward', can be set to any angle relative
     chirp=0,
     photon_e_ev=1.5,  # 1e3,
     num_sig_long=3.0,
@@ -118,6 +119,7 @@ class LaserPulse(ValidatorBase):
         # instantiate the array of slices
         self.slice = []
         self.files = files
+        self.pulse_direction = params.pulse_direction
         self.sigx_waist = params.sigx_waist
         self.sigy_waist = params.sigy_waist
         self.num_sig_trans = params.num_sig_trans
@@ -356,6 +358,11 @@ class LaserPulse(ValidatorBase):
             )
 
         return self
+
+    def set_pulse_direction(self, new_direction):
+        # 0.0 corresponds to 'right' or 'x=0,y=0,z' or 'forward'
+        # new_direction should be relative to this
+        self.pulse_direction = new_direction
 
     def _validate_params(self, input_params, files):
         # if files and input_params.nslice > 1:
