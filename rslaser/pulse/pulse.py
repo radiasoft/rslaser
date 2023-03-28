@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 
 _LASER_PULSE_DEFAULTS = PKDict(
     nslice=3,
+    pulse_direction=0.0,  # 0 corresponds to 'right' or 'z' or 'forward', can be set to any angle relative
     chirp=0,
     photon_e_ev=1.5,  # 1e3,
     num_sig_long=3.0,
@@ -43,7 +44,6 @@ _LASER_PULSE_DEFAULTS = PKDict(
     poltype=1,
     mx=0,
     my=0,
-    pad_factor=1.0,
 )
 _ENVELOPE_DEFAULTS = PKDict(
     w0=0.1,
@@ -119,6 +119,7 @@ class LaserPulse(ValidatorBase):
         # instantiate the array of slices
         self.slice = []
         self.files = files
+        self.pulse_direction = params.pulse_direction
         self.sigx_waist = params.sigx_waist
         self.sigy_waist = params.sigy_waist
         self.num_sig_trans = params.num_sig_trans
@@ -358,6 +359,36 @@ class LaserPulse(ValidatorBase):
 
         return self
 
+    def ideal_mirror_180(self):
+        # 0.0 corresponds to 'right' or 'x=0,y=0,z' or 'forward'
+        if self.pulse_direction == 0.0:
+            self.pulse_direction = 180.0
+        elif self.pulse_direction == 180.0:
+            self.pulse_direction = 0.0
+
+        for laser_index_i in np.arange(self.nslice):
+            thisSlice = self.slice[laser_index_i]
+
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
+                thisSlice.wfr
+            )
+
+            # E_f (x,y) = E_i (-x,-y)
+            new_re_ex_2d = np.flip(re_ex_2d)
+            new_im_ex_2d = np.flip(im_ex_2d)
+            new_re_ey_2d = np.flip(re_ey_2d)
+            new_im_ey_2d = np.flip(im_ey_2d)
+
+            thisSlice.wfr = srwutil.make_wavefront(
+                new_re_ex_2d,
+                new_im_ex_2d,
+                new_re_ey_2d,
+                new_im_ey_2d,
+                thisSlice.photon_e_ev,
+                thisSlice.initial_laser_xy.x,
+                thisSlice.initial_laser_xy.y,
+            )
+
     def _validate_params(self, input_params, files):
         # if files and input_params.nslice > 1:
         #     raise self._INPUT_ERROR("cannot use file inputs with more than one slice")
@@ -538,43 +569,15 @@ class LaserPulseSlice(ValidatorBase):
                 ccd_data
             ), "ERROR -- WFS and CCD data have diferent shapes!!"
 
-            nx_wfs = np.shape(wfs_data)[0]
-            ny_wfs = np.shape(wfs_data)[1]
+            nx = np.shape(wfs_data)[0]
+            ny = np.shape(wfs_data)[1]
             assert (
-                nx_wfs == ny_wfs
+                nx == ny
             ), "ERROR -- data is not square"  # Add method to square data if it is larger than 64x64?
-
-            # pad the data to increase the initial range (pad wfs data with array edge, pad ccd data with zeros)
-            pad_factor = params.pad_factor
-            if pad_factor > 1:
-                n_init = np.shape(wfs_data)[0]  # assumes nx = ny for wfs and ccd
-                nx = int(nx_wfs * pad_factor)
-                ny = int(ny_wfs * pad_factor)
-
-                wfs_data = np.pad(
-                    wfs_data,
-                    (
-                        (int((nx - n_init) / 2), int((nx - n_init) / 2)),
-                        (int((ny - n_init) / 2), int((ny - n_init) / 2)),
-                    ),
-                    mode="edge",
-                )
-                ccd_data = np.pad(
-                    ccd_data,
-                    (
-                        (int((nx - n_init) / 2), int((nx - n_init) / 2)),
-                        (int((ny - n_init) / 2), int((ny - n_init) / 2)),
-                    ),
-                    mode="constant",
-                )
-                ccd_data = gaussian_pad(ccd_data)
 
             # convert from microns to radians
             rad_per_micron = math.pi / lambda0_micron
             wfs_data *= rad_per_micron
-
-            nx = np.shape(wfs_data)[0]
-            ny = np.shape(wfs_data)[1]
 
             # create the x,y arrays with physical units based on the diagnostic pixel dimensions
             x_max = 0.5 * (nx + 1.0) * pixel_size_h * 1.0e-6  # [m]

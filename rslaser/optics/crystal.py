@@ -115,7 +115,18 @@ class Crystal(Element):
         return p
 
     def propagate(self, laser_pulse, prop_type, calc_gain=False, radial_n2=False):
-        for s in self.slice:
+        assert (laser_pulse.pulse_direction == 0.0) or (
+            laser_pulse.pulse_direction == 180.0
+        ), "ERROR -- Propagation not implemented for the pulse direction {}".format(
+            laser_pulse.pulse_direction
+        )
+
+        if laser_pulse.pulse_direction == 0.0:
+            slice_array = self.slice
+        elif laser_pulse.pulse_direction == 180.0:
+            slice_array = self.slice[::-1]
+
+        for s in slice_array:
 
             if radial_n2:
 
