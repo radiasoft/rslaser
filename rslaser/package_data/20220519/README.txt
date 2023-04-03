@@ -13,5 +13,3 @@ Seed (‘Regen’)
 - New file: 
 - w0 = 1.88mm
 - 4.13 microns per pixel
-
-# These files also don't have a header (add in later?)
