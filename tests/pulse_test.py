@@ -113,9 +113,9 @@ def test_from_file():
     pulse_inputs = pulse._LASER_PULSE_DEFAULTS.copy()
     pulse_inputs.nslice = 1
     f = PKDict(
-        ccd=pkio.py_path(_PACKAGE_DATA_DIR).join("ccd_pump_off.txt"),
-        wfs=pkio.py_path(_PACKAGE_DATA_DIR).join("wfs_pump_off.txt"),
-        meta=pkio.py_path(_PACKAGE_DATA_DIR).join("wfs_meta.dat"),
+        ccd=pkio.py_path(_PACKAGE_DATA_DIR).join("20220218/photon_count_pump_off.txt"),
+        wfs=pkio.py_path(_PACKAGE_DATA_DIR).join("20220218/phase_pump_off.txt"),
+        meta=pkio.py_path(_PACKAGE_DATA_DIR).join("20220218/meta_data.dat"),
     )
     wavefront = pulse.LaserPulse(
         pulse_inputs,
