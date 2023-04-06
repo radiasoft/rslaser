@@ -15,12 +15,15 @@ from rslaser.utils.validator import ValidatorBase
 from rslaser.utils import srwl_uti_data as srwutil
 from rslaser.optics.element import ElementException, Element
 
+
 _N_SLICE_DEFAULT = 50
 _N0_DEFAULT = 1.75
 _N2_DEFAULT = 0.001
 _CRYSTAL_DEFAULTS = PKDict(
     n0=[_N0_DEFAULT for _ in range(_N_SLICE_DEFAULT)],
     n2=[_N2_DEFAULT for _ in range(_N_SLICE_DEFAULT)],
+    delta_n_array = None,
+    delta_n = None,
     length=0.2,
     l_scale=1,
     nslice=_N_SLICE_DEFAULT,
@@ -70,12 +73,15 @@ class Crystal(Element):
         self.l_scale = params.l_scale
         self.pump_waist = params.pump_waist
         self.slice = []
+        
+        
         for j in range(self.nslice):
             p = params.copy()
             p.update(
                 PKDict(
                     n0=params.n0[j],
                     n2=params.n2[j],
+                    delta_n=params.delta_n_array[j] if params.delta_n_array is not None else None,
                     length=params.length / params.nslice,
                     slice_index=j,
                 )
@@ -114,7 +120,7 @@ class Crystal(Element):
                 p.nslice = min(len(p.n0), len(p.n2))
         return p
 
-    def propagate(self, laser_pulse, prop_type, calc_gain=False, radial_n2=False):
+    def propagate(self, laser_pulse, prop_type, calc_gain=False, radial_n2=False, nl_kick=False):
         assert (laser_pulse.pulse_direction == 0.0) or (
             laser_pulse.pulse_direction == 180.0
         ), "ERROR -- Propagation not implemented for the pulse direction {}".format(
@@ -164,7 +170,7 @@ class Crystal(Element):
                     laser_pulse_copies, cut_offs, s.n2
                 )
             else:
-                laser_pulse = s.propagate(laser_pulse, prop_type, calc_gain)
+                laser_pulse = s.propagate(laser_pulse, prop_type, calc_gain, nl_kick)
 
             laser_pulse.resize_laser_mesh()
         return laser_pulse
@@ -281,7 +287,12 @@ class CrystalSlice(Element):
             f'{self}.propagate() with prop_type="placeholder" is not currently supported'
         )
 
-    def _propagate_n0n2_lct(self, laser_pulse, calc_gain):
+        
+        
+        
+        
+        
+    def _propagate_n0n2_lct(self, laser_pulse, calc_gain, nl_kick):
         # print('prop_type = n0n2_lct')
         nslices_pulse = len(laser_pulse.slice)
         L_cryst = self.length
@@ -316,6 +327,8 @@ class CrystalSlice(Element):
             thisSlice = laser_pulse.slice[i]
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
+            if nl_kick:
+                thisSlice = self.nl_kick(thisSlice)
 
             # construct 2d numpy complex E_field from pulse wfr object
             # pol = 6 in calc_int_from_wfr() for full electric
@@ -429,7 +442,7 @@ class CrystalSlice(Element):
         # return wfr1
         return laser_pulse
 
-    def _propagate_abcd_lct(self, laser_pulse, calc_gain):
+    def _propagate_abcd_lct(self, laser_pulse, calc_gain, nl_kick):
         # print('prop_type = abcd_lct')
         nslices_pulse = len(laser_pulse.slice)
         l_scale = self.l_scale
@@ -459,6 +472,8 @@ class CrystalSlice(Element):
             thisSlice = laser_pulse.slice[i]
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
+            if nl_kick:
+                thisSlice = self.nl_kick(thisSlice)
 
             # construct 2d numpy complex E_field from pulse wfr object
             # pol = 6 in calc_int_from_wfr() for full electric
@@ -572,7 +587,7 @@ class CrystalSlice(Element):
         # return wfr1
         return laser_pulse
 
-    def _propagate_n0n2_srw(self, laser_pulse, calc_gain):
+    def _propagate_n0n2_srw(self, laser_pulse, calc_gain, nl_kick):
         # print('prop_type = n0n2_srw')
         nslices = len(laser_pulse.slice)
         L_cryst = self.length
@@ -584,6 +599,8 @@ class CrystalSlice(Element):
             thisSlice = laser_pulse.slice[i]
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
+            if nl_kick:
+                thisSlice = self.nl_kick(thisSlice)
             # print(type(thisSlice))
 
             if n2 == 0:
@@ -634,8 +651,15 @@ class CrystalSlice(Element):
             thisSlice = laser_pulse.slice[i]
             thisSlice = self.calc_gain(thisSlice)
         return laser_pulse
+    
+    def _propagate_nl_kick(self, laser_pulse, nl_kick):
+        # applies NL kick regardless of nl_kick param value
+        for i in np.arange(len(laser_pulse.slice)):
+            thisSlice = laser_pulse.slice[i]
+            thisSlice = self.nl_kick(thisSlice)
+        return laser_pulse
 
-    def propagate(self, laser_pulse, prop_type, calc_gain=False):
+    def propagate(self, laser_pulse, prop_type, calc_gain=False, nl_kick=False):
         return PKDict(
             attenuate=self._propagate_attenuate,
             placeholder=self._propagate_placeholder,
@@ -644,7 +668,7 @@ class CrystalSlice(Element):
             n0n2_srw=self._propagate_n0n2_srw,
             gain_calc=self._propagate_gain_calc,
             default=super().propagate,
-        )[prop_type](laser_pulse, calc_gain)
+        )[prop_type](laser_pulse, calc_gain, nl_kick)
 
     def _interpolate_a_to_b(self, a, b):
         if a == "pop_inversion":
@@ -808,3 +832,9 @@ class CrystalSlice(Element):
 
         thisSlice.wfr = wfr1
         return thisSlice
+    
+    def nl_kick(self, thisSlice):
+        print('nl_kick successfully called')
+        
+        return thisSlice
+        
