@@ -33,15 +33,15 @@ _CRYSTAL_DEFAULTS = PKDict(
     B=1.41975385,
     C=-0.0023775,
     D=0.99896716,
-    population_inversion = PKDict(
+    population_inversion=PKDict(
         n_cells=64,
         mesh_extent=0.01,  # [m]
         crystal_alpha=120.0,  # [1/m], 1.2 1/cm
         pump_waist=0.00164,  # [m]
         pump_wavelength=532.0e-9,  # [m]
         pump_energy=0.0211,  # [J], pump laser energy onto the crystal
-        pump_type='dual',
-    )
+        pump_type="dual",
+    ),
 )
 
 
@@ -127,9 +127,9 @@ class Crystal(Element):
             slice_array = self.slice
         elif laser_pulse.pulse_direction == 180.0:
             slice_array = self.slice[::-1]
-        
+
         for s in slice_array:
-            
+
             if radial_n2:
 
                 assert prop_type == "n0n2_srw", "ERROR -- Only implemented for n0n2_srw"
@@ -154,7 +154,9 @@ class Crystal(Element):
                     laser_pulse.slice[0].wfr.mesh.nx,
                 )
 
-                zero_cut_off = 1.3 * s.population_inversion.pump_waist  # Outside this value is zero n2
+                zero_cut_off = (
+                    1.3 * s.population_inversion.pump_waist
+                )  # Outside this value is zero n2
                 linear_cut_off = s.population_inversion.pump_waist / np.sqrt(
                     2.0
                 )  # This value and within is linear n2 (if used)
@@ -220,7 +222,7 @@ class CrystalSlice(Element):
 
         # z = distance from left of crystal to center of current slice (assumes all crystal slices have same length)
         z = self.length * (self.slice_index + 0.5)
-        
+
         slice_front = z - (self.length / 2.0)
         slice_end = z + (self.length / 2.0)
 
@@ -232,31 +234,42 @@ class CrystalSlice(Element):
             )
             / self.population_inversion.crystal_alpha
         ) / (np.exp(-self.population_inversion.crystal_alpha * z) * self.length)
-        
+
         # Create a default mesh of [num_excited_states/m^3]
         pop_inversion_mesh = (
             (self.population_inversion.pump_wavelength / (const.h * const.c))
             * (
                 (
                     2.0
-                    * (1 - np.exp(-self.population_inversion.crystal_alpha * self.length * nslice))
+                    * (
+                        1
+                        - np.exp(
+                            -self.population_inversion.crystal_alpha
+                            * self.length
+                            * nslice
+                        )
+                    )
                     * (2.0 / 3.0)
                     * self.population_inversion.pump_energy
-                    * np.exp(-2.0 * (xv**2.0 + yv**2.0) / self.population_inversion.pump_waist**2.0)
+                    * np.exp(
+                        -2.0
+                        * (xv**2.0 + yv**2.0)
+                        / self.population_inversion.pump_waist**2.0
+                    )
                 )
                 / (const.pi * self.population_inversion.pump_waist**2.0)
             )
             * np.exp(-self.population_inversion.crystal_alpha * z)
             * correction_factor
-        ) / (self.length * nslice) 
-        
+        ) / (self.length * nslice)
+
         return pop_inversion_mesh
-        
+
     def _right_pump(self, nslice, xv, yv):
 
         # z = distance from right of crystal to center of current slice (assumes all crystal slices have same length)
         z = self.length * ((nslice - self.slice_index - 1) + 0.5)
-        
+
         slice_front = z - (self.length / 2.0)
         slice_end = z + (self.length / 2.0)
 
@@ -268,44 +281,57 @@ class CrystalSlice(Element):
             )
             / self.population_inversion.crystal_alpha
         ) / (np.exp(-self.population_inversion.crystal_alpha * z) * self.length)
-        
+
         # Create a default mesh of [num_excited_states/m^3]
         pop_inversion_mesh = (
             (self.population_inversion.pump_wavelength / (const.h * const.c))
             * (
                 (
                     2.0
-                    * (1 - np.exp(-self.population_inversion.crystal_alpha * self.length * nslice))
+                    * (
+                        1
+                        - np.exp(
+                            -self.population_inversion.crystal_alpha
+                            * self.length
+                            * nslice
+                        )
+                    )
                     * (2.0 / 3.0)
                     * self.population_inversion.pump_energy
-                    * np.exp(-2.0 * (xv**2.0 + yv**2.0) / self.population_inversion.pump_waist**2.0)
+                    * np.exp(
+                        -2.0
+                        * (xv**2.0 + yv**2.0)
+                        / self.population_inversion.pump_waist**2.0
+                    )
                 )
                 / (const.pi * self.population_inversion.pump_waist**2.0)
             )
             * np.exp(-self.population_inversion.crystal_alpha * z)
             * correction_factor
-        ) / (self.length * nslice) 
-        
+        ) / (self.length * nslice)
+
         return pop_inversion_mesh
-        
-    def _dual_pump(self, nslice, xv, yv):        
+
+    def _dual_pump(self, nslice, xv, yv):
         left_pump_mesh = self._left_pump(nslice, xv, yv)
         right_pump_mesh = self._right_pump(nslice, xv, yv)
-        return (left_pump_mesh + right_pump_mesh)
+        return left_pump_mesh + right_pump_mesh
 
     def _initialize_excited_states_mesh(self, population_inversion, nslice):
         self.population_inversion = population_inversion
         x = np.linspace(
-            -population_inversion.mesh_extent, population_inversion.mesh_extent, population_inversion.n_cells
+            -population_inversion.mesh_extent,
+            population_inversion.mesh_extent,
+            population_inversion.n_cells,
         )
         xv, yv = np.meshgrid(x, x)
-        
+
         self.pop_inversion_mesh = PKDict(
             dual=self._dual_pump,
             left=self._left_pump,
             right=self._right_pump,
         )[population_inversion.pump_type](nslice, xv, yv)
-    
+
     def _propagate_attenuate(self, laser_pulse, calc_gain):
         # n_x = wfront.mesh.nx  #  nr of grid points in x
         # n_y = wfront.mesh.ny  #  nr of grid points in y
