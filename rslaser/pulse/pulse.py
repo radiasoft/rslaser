@@ -196,6 +196,24 @@ class LaserPulse(ValidatorBase):
                     thisSlice.initial_laser_xy.y,
                 )
 
+    def extract_total_2d_phase(self):
+    
+        slice_n_photons = np.array([])
+        for laser_index_i in np.arange(self.nslice):
+            slice_n_photons = np.append(slice_n_photons,np.sum(self.slice[laser_index_i].n_photons_2d.mesh))
+    
+        total_phase_2d = np.zeros((self.slice[0].wfr.mesh.nx,self.slice[0].wfr.mesh.ny))
+        for laser_index_i in np.arange(self.nslice):
+            wfr = self.slice[laser_index_i].wfr
+            slice_phase_1d = srwlib.array('d', [0]*wfr.mesh.nx*wfr.mesh.ny)
+            srwlib.srwl.CalcIntFromElecField(slice_phase_1d, wfr, 0, 4, 3, wfr.mesh.eStart, 0, 0)
+            slice_phase_2d = np.unwrap(np.unwrap(np.array(slice_phase_1d).reshape((wfr.mesh.nx, wfr.mesh.ny), order='C').astype(np.float64),axis=0),axis=1)
+        
+            weight = slice_n_photons[laser_index_i]/np.sum(slice_n_photons)
+            total_phase_2d += (slice_phase_2d *weight)
+        
+        return total_phase_2d
+
     def extract_total_2d_elec_fields(self):
         # Assumes gaussian shape
 
@@ -389,6 +407,35 @@ class LaserPulse(ValidatorBase):
                 thisSlice.initial_laser_xy.y,
             )
 
+    def zero_phase(self):
+        # Manually zero the phase   
+        for laser_index_i in np.arange(self.nslice):
+            thisSlice = self.slice[laser_index_i]
+
+            # Extract horizontal component of electric field
+            re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(thisSlice.wfr, _pol=0, _int_type=5, _det=None, _fname="", _pr=False)
+            im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(thisSlice.wfr, _pol=0, _int_type=6, _det=None, _fname="", _pr=False)
+        
+            # Reshape arrays from 1d to 2d
+            re_ex_2d = np.array(re0_ex).reshape((thisSlice.wfr.mesh.nx, thisSlice.wfr.mesh.ny), order="C").astype(np.float64)
+            im_ex_2d = np.array(im0_ex).reshape((thisSlice.wfr.mesh.nx, thisSlice.wfr.mesh.ny), order="C").astype(np.float64)
+        
+            new_re_ex_2d = np.sqrt(re_ex_2d**2.0 + im_ex_2d**2.0)
+            new_im_ex_2d = np.zeros(np.shape(new_re_ex_2d))
+            new_re_ey_2d = np.zeros(np.shape(new_re_ex_2d))
+            new_im_ey_2d = np.zeros(np.shape(new_re_ex_2d))
+        
+            # remake the wavefront
+            thisSlice.wfr = srwutil.make_wavefront(
+                new_re_ex_2d,
+                new_im_ex_2d,
+                new_re_ey_2d,
+                new_im_ey_2d,
+                thisSlice.photon_e_ev,
+                thisSlice.initial_laser_xy.x,
+                thisSlice.initial_laser_xy.y,
+            )
+    
     def _validate_params(self, input_params, files):
         # if files and input_params.nslice > 1:
         #     raise self._INPUT_ERROR("cannot use file inputs with more than one slice")
@@ -584,7 +631,7 @@ class LaserPulseSlice(ValidatorBase):
             x_min = -x_max
             y_max = 0.5 * (ny + 1.0) * pixel_size_v * 1.0e-6  # [m]
             y_min = -y_max
-
+            
             # Calulate the real and imaginary parts of the Ex,Ey electric field components
             e_norm = np.sqrt(ccd_data)
 
