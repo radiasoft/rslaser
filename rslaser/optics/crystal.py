@@ -161,7 +161,7 @@ class Crystal(Element):
                 laser_pulse = laser_pulse.combine_n2_variation(
                     laser_pulse_copies,
                     s.radial_n2_factor,
-                    s.pop_inversion_pump_waist,
+                    s.population_inversion.pump_waist,
                     s.n2,
                 )
             else:
