@@ -36,18 +36,16 @@ _CRYSTAL_DEFAULTS = PKDict(
     C=-0.0023775,
     D=0.99896716,
     radial_n2_factor=1.3,
-    population_inversion=PKDict(
-        n_cells=64,
-        mesh_extent=0.01,  # [m]
-        crystal_alpha=120.0,  # [1/m], 1.2 1/cm
-        pump_waist=0.00164,  # [m]
-        pump_wavelength=532.0e-9,  # [m]
-        pump_energy=0.0211,  # [J], pump laser energy onto the crystal
-        pump_type="dual",
-        pump_gaussian_order=2.0,
-        pump_offset_x=0.0,
-        pump_offset_y=0.0,
-    ),
+    pop_inversion_n_cells=64,
+    pop_inversion_mesh_extent=0.01,  # [m]
+    pop_inversion_crystal_alpha=120.0,  # [1/m], 1.2 1/cm
+    pop_inversion_pump_waist=0.00164,  # [m]
+    pop_inversion_pump_wavelength=532.0e-9,  # [m]
+    pop_inversion_pump_energy=0.0211,  # [J], pump laser energy onto the crystal
+    pop_inversion_pump_type="dual",
+    pop_inversion_pump_gaussian_order=2.0,
+    pop_inversion_pump_offset_x=0.0,
+    pop_inversion_pump_offset_y=0.0,
 )
 
 
@@ -163,7 +161,7 @@ class Crystal(Element):
                 laser_pulse = laser_pulse.combine_n2_variation(
                     laser_pulse_copies,
                     s.radial_n2_factor,
-                    s.population_inversion.pump_waist,
+                    s.pop_inversion_pump_waist,
                     s.n2,
                 )
             else:
@@ -248,7 +246,7 @@ class CrystalSlice(Element):
         # sig_cr_sec = np.ones((n_x, n_y), dtype=np.float32)
 
         # 2d mesh of excited state density (sigma)
-        self._initialize_excited_states_mesh(params.population_inversion, params.nslice)
+        self._initialize_excited_states_mesh(params, params.nslice)
 
     def _left_pump(self, nslice, xv, yv):
 
@@ -373,12 +371,24 @@ class CrystalSlice(Element):
         right_pump_mesh = self._right_pump(nslice, xv, yv)
         return left_pump_mesh + right_pump_mesh
 
-    def _initialize_excited_states_mesh(self, population_inversion, nslice):
-        self.population_inversion = population_inversion
+    def _initialize_excited_states_mesh(self, params, nslice):
+        # TODO (gurhar1133): loop over params and use names to build
+        self.population_inversion = PKDict(
+            n_cells=params.pop_inversion_n_cells,
+            mesh_extent=params.pop_inversion_mesh_extent,
+            crystal_alpha=params.pop_inversion_crystal_alpha,
+            pump_waist=params.pop_inversion_pump_waist,
+            pump_wavelength=params.pop_inversion_pump_wavelength,
+            pump_energy=params.pop_inversion_pump_energy,
+            pump_type=params.pop_inversion_pump_type,
+            pump_gaussian_order=params.pop_inversion_pump_gaussian_order,
+            pump_offset_x=params.pop_inversion_pump_offset_x,
+            pump_offset_y=params.pop_inversion_pump_offset_y,
+        )
         x = np.linspace(
-            -population_inversion.mesh_extent,
-            population_inversion.mesh_extent,
-            population_inversion.n_cells,
+            -self.population_inversion.mesh_extent,
+            self.population_inversion.mesh_extent,
+            self.population_inversion.n_cells,
         )
         xv, yv = np.meshgrid(x, x)
 
@@ -386,7 +396,7 @@ class CrystalSlice(Element):
             dual=self._dual_pump,
             left=self._left_pump,
             right=self._right_pump,
-        )[population_inversion.pump_type](nslice, xv, yv)
+        )[self.population_inversion.pump_type](nslice, xv, yv)
 
     def _propagate_attenuate(self, laser_pulse, calc_gain):
         # n_x = wfront.mesh.nx  #  nr of grid points in x
