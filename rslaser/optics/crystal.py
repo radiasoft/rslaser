@@ -372,19 +372,10 @@ class CrystalSlice(Element):
         return left_pump_mesh + right_pump_mesh
 
     def _initialize_excited_states_mesh(self, params, nslice):
-        # TODO (gurhar1133): loop over params and use names to build
-        self.population_inversion = PKDict(
-            n_cells=params.pop_inversion_n_cells,
-            mesh_extent=params.pop_inversion_mesh_extent,
-            crystal_alpha=params.pop_inversion_crystal_alpha,
-            pump_waist=params.pop_inversion_pump_waist,
-            pump_wavelength=params.pop_inversion_pump_wavelength,
-            pump_energy=params.pop_inversion_pump_energy,
-            pump_type=params.pop_inversion_pump_type,
-            pump_gaussian_order=params.pop_inversion_pump_gaussian_order,
-            pump_offset_x=params.pop_inversion_pump_offset_x,
-            pump_offset_y=params.pop_inversion_pump_offset_y,
-        )
+        self.population_inversion = PKDict()
+        for k in params:
+            if "pop_inversion" in k:
+                self.population_inversion[k.replace("pop_inversion_", "")] = params[k]
         x = np.linspace(
             -self.population_inversion.mesh_extent,
             self.population_inversion.mesh_extent,
