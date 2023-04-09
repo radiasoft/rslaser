@@ -21,6 +21,14 @@ def test_instantiation01():
             pykern.pkunit.pkfail(
                 "CrystalSlice had length not equal to Crystal wrapper length/nslice"
             )
+    crystal.Crystal(
+            PKDict(
+            nslice=10,
+            population_inversion=PKDict(
+                n_cell=32,
+            ),
+        )
+    )
 
 
 def test_crystal_nslice():
