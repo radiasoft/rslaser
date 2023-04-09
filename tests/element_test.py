@@ -22,7 +22,7 @@ def test_instantiation01():
                 "CrystalSlice had length not equal to Crystal wrapper length/nslice"
             )
     crystal.Crystal(
-            PKDict(
+        PKDict(
             nslice=10,
             pop_inversion_n_cells=32,
         )
