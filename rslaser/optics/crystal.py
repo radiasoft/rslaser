@@ -11,10 +11,16 @@ import srwlib
 import scipy.constants as const
 from scipy import interpolate
 from scipy.interpolate import RectBivariateSpline
+from scipy.interpolate import splrep
+from scipy.interpolate import splev
+from scipy.optimize import curve_fit
+from scipy.special import gamma
 from rsmath import lct as rslct
 from rslaser.utils.validator import ValidatorBase
 from rslaser.utils import srwl_uti_data as srwutil
 from rslaser.optics.element import ElementException, Element
+from fenics import *
+from mshr import *
 
 
 _N_SLICE_DEFAULT = 50
@@ -38,12 +44,18 @@ _CRYSTAL_DEFAULTS = PKDict(
     B=1.41975385,
     C=-0.0023775,
     D=0.99896716,
-    inversion_n_cells=64,
-    inversion_mesh_extent=0.01,  # [m]
-    crystal_alpha=120.0,  # [1/m], 1.2 1/cm
-    pump_waist=0.00164,  # [m]
-    pump_wavelength=532.0e-9,  # [m]
-    pump_energy=0.0211,  # [J], pump laser energy onto the crystal
+    radial_n2_factor=1.3,
+    pop_inversion_n_cells=64,
+    pop_inversion_mesh_extent=0.01,  # [m]
+    pop_inversion_crystal_alpha=120.0,  # [1/m], 1.2 1/cm
+    pop_inversion_pump_waist=0.00164,  # [m]
+    pop_inversion_pump_wavelength=532.0e-9,  # [m]
+    pop_inversion_pump_energy=0.0211,  # [J], pump laser energy onto the crystal
+    pop_inversion_pump_type="dual",
+    pop_inversion_pump_gaussian_order=2.0,
+    pop_inversion_pump_offset_x=0.0,
+    pop_inversion_pump_offset_y=0.0,
+    pop_inversion_pump_rep_rate=1.0e3,
 )
 
 
@@ -65,6 +77,7 @@ class Crystal(Element):
     def __init__(self, params=None):
         params = self._get_params(params)
         self._validate_params(params)
+        self.params = params
 
         # Check if n2<0, throw an exception if true
         if (np.array(params.n2) < 0.0).any():
@@ -73,10 +86,9 @@ class Crystal(Element):
         self.length = params.length
         self.nslice = params.nslice
         self.l_scale = params.l_scale
-        self.pump_waist = params.pump_waist
         self.slice = []
-        
-        
+
+
         for j in range(self.nslice):
             p = params.copy()
             p.update(
@@ -134,6 +146,12 @@ class Crystal(Element):
         elif laser_pulse.pulse_direction == 180.0:
             slice_array = self.slice[::-1]
 
+        # Iterate through laser_pulse and offset all of the fields
+        laser_pulse.shift_wavefront(
+            self.slice[0].population_inversion.pump_offset_x,
+            self.slice[0].population_inversion.pump_offset_y,
+        )
+
         for s in slice_array:
 
             if radial_n2:
@@ -154,28 +172,146 @@ class Crystal(Element):
                     laser_pulse_copies.n2_0, prop_type, calc_gain
                 )
 
-                x = np.linspace(
-                    laser_pulse.slice[0].wfr.mesh.xStart,
-                    laser_pulse.slice[0].wfr.mesh.xFin,
-                    laser_pulse.slice[0].wfr.mesh.nx,
-                )
-
-                zero_cut_off = 1.3 * self.pump_waist  # Outside this value is zero n2
-                linear_cut_off = self.pump_waist / np.sqrt(
-                    2.0
-                )  # This value and within is linear n2 (if used)
-                linear_index = (np.abs(x - linear_cut_off)).argmin()
-                zero_index = (np.abs(x - zero_cut_off)).argmin()
-
-                cut_offs = np.array([linear_index, zero_index])
                 laser_pulse = laser_pulse.combine_n2_variation(
-                    laser_pulse_copies, cut_offs, s.n2
+                    laser_pulse_copies,
+                    s.radial_n2_factor,
+                    s.population_inversion.pump_waist,
+                    s.n2,
                 )
             else:
                 laser_pulse = s.propagate(laser_pulse, prop_type, calc_gain, nl_kick)
 
             laser_pulse.resize_laser_mesh()
+            laser_pulse.flatten_phase_edges()
+
+        # Iterate through laser_pulse and return all of the fields
+        laser_pulse.shift_wavefront(
+            -self.slice[0].population_inversion.pump_offset_x,
+            -self.slice[0].population_inversion.pump_offset_y,
+        )
+        laser_pulse.resize_laser_mesh()
+        laser_pulse.flatten_phase_edges()
+
         return laser_pulse
+
+    def calc_n0n2_fenics(self, set_n=False, initial_temp=0.0, mesh_density=80):
+        # initial_temp [degC],
+        # mesh_density [int]: value ≥ 120 will produce more accurate results; slower, but closer to numerical conversion
+
+        n_radpts = 201  # no. of radial points at which to extract data
+        n_longpts = 201  # no. of longitudinal points at which to extract data
+        num_long_slices = 180  # no. of longitudinal slices
+
+        # values need to be in [cm]
+        crystal_diameter = self.params.pop_inversion_mesh_extent * 2.0 * 1.0e2
+        crystal_length = self.length * 1.0e2
+        pump_waist = self.params.pop_inversion_pump_waist * 1.0e2
+        # value needs to be in [1/cm]
+        absorption_coefficient = self.params.pop_inversion_crystal_alpha / 1.0e2
+        # value needs to be in [J]
+        pump_energy = self.params.pop_inversion_pump_energy
+        # value needs to be in [W]
+        pump_power = pump_energy * self.params.pop_inversion_pump_rep_rate
+
+        pump_gaussian_order = self.params.pop_inversion_pump_gaussian_order
+
+        mesh_tol = 2.0e-2  # mesh tolerance
+        mesh = _calculate_mesh(crystal_length, crystal_diameter, mesh_density)
+        xvals = mesh.coordinates()[:, 0]
+        yvals = mesh.coordinates()[:, 1]
+        zvals = mesh.coordinates()[:, 2]
+        xmin, xmax = xvals.min(), xvals.max()
+        ymin, ymax = yvals.min(), yvals.max()
+        zmin, zmax = zvals.min(), zvals.max()
+        xv = np.linspace(xmin * (1.0 - mesh_tol), xmax * (1.0 - mesh_tol), n_radpts)
+        yv = np.linspace(ymin * (1.0 - mesh_tol), ymax * (1.0 - mesh_tol), n_radpts)
+        zv = np.linspace(zmin * (1.0 - mesh_tol), zmax * (1.0 - mesh_tol), n_longpts)
+        radial_pts = np.asarray([(x_, 0, 0) for x_ in xv])
+        laser_range_min = (
+            np.abs(radial_pts[:, 0] - (-0.5 * pump_waist))
+        ).argmin()  # min index value of center data range  # JVT +/- 0.5*w_p
+        laser_range_max = (
+            np.abs(radial_pts[:, 0] - (0.5 * pump_waist))
+        ).argmin()  # max index value of center data range  # JVT +/- 0.5*w_p
+
+        if self.params.pop_inversion_pump_rep_rate == 1.0e3:
+            heat_load = _define_heat_load_expression(
+                pump_waist,
+                absorption_coefficient,
+                crystal_length,
+                pump_power,
+                pump_gaussian_order,
+            )
+            long_temp_profiles = _call_fenics(
+                mesh, heat_load, crystal_diameter, initial_temp, zv, radial_pts
+            )
+        elif self.params.pop_inversion_pump_rep_rate == 1.0:
+            long_temp_profiles = _calc_temperature_change(
+                pump_waist,
+                absorption_coefficient,
+                crystal_length,
+                crystal_diameter,
+                pump_energy,
+                pump_gaussian_order,
+                xv,
+                zv,
+            )
+        else:
+            print(
+                "No method implemented for a rep rate of {}.".format(
+                    self.params.pop_inversion_pump_rep_rate
+                )
+            )
+
+        integrated_temps = _calc_T(
+            long_temp_profiles, crystal_length, num_long_slices, zv, radial_pts
+        )
+
+        # Calculate index of refraction for each slice, from T(r)
+        n0_full_array, n2_full_array = _calc_n_from_T(
+            num_long_slices,
+            radial_pts,
+            integrated_temps,
+            laser_range_min,
+            laser_range_max,
+        )
+
+        # fix negative n2 vals and ****divide through by 2 based on Gaussian duct definition n(r) = n0 - 1/2*n2*r^2**** - see rp-photonics.com
+        n2_full_array = np.multiply(n2_full_array, -2.0)
+        n2_full_array = np.multiply(n2_full_array, 1.0e4)
+
+        # Look at why n2 goes negative...
+        n2_full_array[n2_full_array <= 0.0] = 1.0e-6
+
+        # Calculate the ABCD matrix for the total crystal (usable with abcd_lct if no gain)
+        full_crystal_abcd_mat = _calc_full_abcd_mat(
+            crystal_length, n0_full_array, n2_full_array
+        )
+
+        z_full_array = np.linspace(0.0, self.length, len(n0_full_array))
+        n0_fit = splrep(z_full_array, n0_full_array)
+        n2_fit = splrep(z_full_array, n2_full_array)
+
+        z_crystal_slice = (self.length / self.nslice) * (np.arange(self.nslice) + 0.5)
+        n0_slice_array = splev(z_crystal_slice, n0_fit)
+        n2_slice_array = splev(z_crystal_slice, n2_fit)
+
+        if self.params.pop_inversion_pump_type == "right":
+            n0_output = n0_slice_array[::-1]
+            n2_output = n2_slice_array[::-1]
+        elif self.params.pop_inversion_pump_type == "left":
+            n0_output = n0_slice_array
+            n2_output = n2_slice_array
+        elif self.params.pop_inversion_pump_type == "dual":
+            n0_output = (n0_slice_array + n0_slice_array[::-1]) / 2.0
+            n2_output = n2_slice_array + n2_slice_array[::-1]
+
+        if set_n:
+            for s in self.slice:
+                s.n0 = n0_output[s.slice_index]
+                s.n2 = n2_output[s.slice_index]
+
+        return n0_output, n2_output, full_crystal_abcd_mat
 
 
 class CrystalSlice(Element):
@@ -204,6 +340,7 @@ class CrystalSlice(Element):
         self._validate_params(params)
         self.length = params.length
         self.nslice = params.nslice
+        self.slice_index = params.slice_index
         self.n0 = params.n0
         self.n2 = params.n2
         self.delta_n = params.delta_n
@@ -213,64 +350,191 @@ class CrystalSlice(Element):
         self.B = params.B
         self.C = params.C
         self.D = params.D
-        
+        self.radial_n2_factor = params.radial_n2_factor
+
+        # Wavelength-dependent cross-section (P. F. Moulton, 1986)
+        wavelength = np.array(
+            [600, 625, 650, 700, 750, 800, 850, 900, 950, 1000, 1025, 1050]
+        ) * (1.0e-9)
+        cross_section = np.array(
+            [
+                0.0,
+                0.02,
+                0.075,
+                0.437,
+                0.845,
+                0.99,
+                0.815,
+                0.6,
+                0.415,
+                0.276,
+                0.255,
+                0.247,
+            ]
+        ) * (4.8e-23)
+        self.cross_section_fn = splrep(wavelength, cross_section)
 
         #  Assuming wfr0 exsts, created e.g. via
         #  wfr0=createGsnSrcSRW(sigrW,propLen,pulseE,poltype,photon_e_ev,sampFact,mx,my)
         # n_x = wfr0.mesh.nx  #  nr of grid points in x
         # n_y = wfr0.mesh.ny  #  nr of grid points in y
         # sig_cr_sec = np.ones((n_x, n_y), dtype=np.float32)
-        
+
         # create mesh for delta_n array
         self.delta_n_xstart = -params.delta_n_mesh_extent
         self.delta_n_xfin = params.delta_n_mesh_extent
 
-        # 2d mesh of excited state density (sigma), populating it
-        # and its params with dummy variables for interpolation
-        self.pop_inversion_nx = params.inversion_n_cells
-        self.pop_inversion_ny = params.inversion_n_cells
-        self.pop_inversion_xstart = -params.inversion_mesh_extent
-        self.pop_inversion_xfin = params.inversion_mesh_extent
-        self.pop_inversion_ystart = -params.inversion_mesh_extent
-        self.pop_inversion_yfin = params.inversion_mesh_extent
+        # 2d mesh of excited state density (sigma)
+        self._initialize_excited_states_mesh(params, params.nslice)
 
-        x = np.linspace(
-            self.pop_inversion_xstart, self.pop_inversion_xfin, self.pop_inversion_nx
-        )
-        y = np.linspace(
-            self.pop_inversion_ystart, self.pop_inversion_yfin, self.pop_inversion_ny
-        )
-        xv, yv = np.meshgrid(x, y)
+    def _left_pump(self, nslice, xv, yv):
 
-        # z = distance from front of crystal to center of current slice (assumes all crystal slices have same length)
-        z = self.length * (params.slice_index + 0.5)
-        length_crystal = self.length * params.nslice
+        # z = distance from left of crystal to center of current slice (assumes all crystal slices have same length)
+        z = self.length * (self.slice_index + 0.5)
+
         slice_front = z - (self.length / 2.0)
         slice_end = z + (self.length / 2.0)
 
+        # calculate correction factor for representing a gaussian pulse with a series of flat-top slices
         correction_factor = (
             (
-                np.exp(-params.crystal_alpha * slice_front)
-                - np.exp(-params.crystal_alpha * slice_end)
+                np.exp(-self.population_inversion.crystal_alpha * slice_front)
+                - np.exp(-self.population_inversion.crystal_alpha * slice_end)
             )
-            / params.crystal_alpha
-        ) / (np.exp(-params.crystal_alpha * z) * self.length)
+            / self.population_inversion.crystal_alpha
+        ) / (np.exp(-self.population_inversion.crystal_alpha * z) * self.length)
+
+        # integrate super-gaussian
+        g_order = self.population_inversion.pump_gaussian_order
+        integral_factor = (2 ** ((g_order - 2.0) / g_order) * gamma(2 / g_order)) / (
+            g_order
+            * (1 / (self.population_inversion.pump_waist**g_order)) ** (2.0 / g_order)
+        )
+
+        pump_wavelength = 532.0  # [nm]
+        seed_wavelength = 800.0  # [nm]
+        fraction_to_heating = (seed_wavelength - pump_wavelength) / seed_wavelength
+
         # Create a default mesh of [num_excited_states/m^3]
-        self.pop_inversion_mesh = (
-            (params.pump_wavelength / (const.h * const.c))
+        pop_inversion_mesh = (
+            (self.population_inversion.pump_wavelength / (const.h * const.c))
             * (
                 (
-                    2.0
-                    * (1 - np.exp(-params.crystal_alpha * length_crystal))
-                    * (2.0 / 3.0)
-                    * params.pump_energy
-                    * np.exp(-2.0 * (xv**2.0 + yv**2.0) / params.pump_waist**2.0)
+                    (
+                        1
+                        - np.exp(
+                            -self.population_inversion.crystal_alpha
+                            * self.length
+                            * nslice
+                        )
+                    )
+                    * (1.0 - fraction_to_heating)
+                    * self.population_inversion.pump_energy
+                    * np.exp(
+                        -2.0
+                        * (
+                            np.sqrt(
+                                (xv - self.population_inversion.pump_offset_x) ** 2.0
+                                + (yv - self.population_inversion.pump_offset_y) ** 2.0
+                            )
+                            / self.population_inversion.pump_waist
+                        )
+                        ** g_order
+                    )
                 )
-                / (const.pi * params.pump_waist**2.0)
+                / (const.pi * integral_factor)
             )
-            * np.exp(-params.crystal_alpha * z)
+            * np.exp(-self.population_inversion.crystal_alpha * z)
             * correction_factor
-        ) / (self.length * params.nslice)
+        ) / (self.length * nslice)
+
+        return pop_inversion_mesh
+
+    def _right_pump(self, nslice, xv, yv):
+
+        # z = distance from right of crystal to center of current slice (assumes all crystal slices have same length)
+        z = self.length * ((nslice - self.slice_index - 1) + 0.5)
+
+        slice_front = z - (self.length / 2.0)
+        slice_end = z + (self.length / 2.0)
+
+        # calculate correction factor for representing a gaussian pulse with a series of flat-top slices
+        correction_factor = (
+            (
+                np.exp(-self.population_inversion.crystal_alpha * slice_front)
+                - np.exp(-self.population_inversion.crystal_alpha * slice_end)
+            )
+            / self.population_inversion.crystal_alpha
+        ) / (np.exp(-self.population_inversion.crystal_alpha * z) * self.length)
+
+        # integrate super-gaussian
+        g_order = self.population_inversion.pump_gaussian_order
+        integral_factor = (2 ** ((g_order - 2.0) / g_order) * gamma(2 / g_order)) / (
+            g_order
+            * (1 / (self.population_inversion.pump_waist**g_order)) ** (2.0 / g_order)
+        )
+
+        pump_wavelength = 532.0  # [nm]
+        seed_wavelength = 800.0  # [nm]
+        fraction_to_heating = (seed_wavelength - pump_wavelength) / seed_wavelength
+
+        # Create a default mesh of [num_excited_states/m^3]
+        pop_inversion_mesh = (
+            (self.population_inversion.pump_wavelength / (const.h * const.c))
+            * (
+                (
+                    (
+                        1
+                        - np.exp(
+                            -self.population_inversion.crystal_alpha
+                            * self.length
+                            * nslice
+                        )
+                    )
+                    * (1.0 - fraction_to_heating)
+                    * self.population_inversion.pump_energy
+                    * np.exp(
+                        -2.0
+                        * (
+                            np.sqrt(
+                                (xv - self.population_inversion.pump_offset_x) ** 2.0
+                                + (yv - self.population_inversion.pump_offset_y) ** 2.0
+                            )
+                            / self.population_inversion.pump_waist
+                        )
+                        ** g_order
+                    )
+                )
+                / (const.pi * integral_factor)
+            )
+            * np.exp(-self.population_inversion.crystal_alpha * z)
+            * correction_factor
+        ) / (self.length * nslice)
+
+        return pop_inversion_mesh
+
+    def _dual_pump(self, nslice, xv, yv):
+        left_pump_mesh = self._left_pump(nslice, xv, yv)
+        right_pump_mesh = self._right_pump(nslice, xv, yv)
+        return left_pump_mesh + right_pump_mesh
+
+    def _initialize_excited_states_mesh(self, params, nslice):
+        self.population_inversion = PKDict()
+        for k in params:
+            if "pop_inversion" in k:
+                self.population_inversion[k.replace("pop_inversion_", "")] = params[k]
+        x = np.linspace(
+            -self.population_inversion.mesh_extent,
+            self.population_inversion.mesh_extent,
+            self.population_inversion.n_cells,
+        )
+        xv, yv = np.meshgrid(x, x)
+
+        self.pop_inversion_mesh = PKDict(
+            dual=self._dual_pump,
+            left=self._left_pump,
+            right=self._right_pump,
+        )[self.population_inversion.pump_type](nslice, xv, yv)
 
     def _propagate_attenuate(self, laser_pulse, calc_gain):
         # n_x = wfront.mesh.nx  #  nr of grid points in x
@@ -296,11 +560,11 @@ class CrystalSlice(Element):
             f'{self}.propagate() with prop_type="placeholder" is not currently supported'
         )
 
-        
-        
-        
-        
-        
+
+
+
+
+
     def _propagate_n0n2_lct(self, laser_pulse, calc_gain, nl_kick):
         # print('prop_type = n0n2_lct')
         nslices_pulse = len(laser_pulse.slice)
@@ -660,7 +924,7 @@ class CrystalSlice(Element):
             thisSlice = laser_pulse.slice[i]
             thisSlice = self.calc_gain(thisSlice)
         return laser_pulse
-    
+
     def _propagate_nl_kick(self, laser_pulse, nl_kick):
         # applies NL kick regardless of nl_kick param value
         for i in np.arange(len(laser_pulse.slice)):
@@ -685,15 +949,11 @@ class CrystalSlice(Element):
             temp_array = np.copy(self.pop_inversion_mesh)
 
             a_x = np.linspace(
-                self.pop_inversion_xstart,
-                self.pop_inversion_xfin,
-                self.pop_inversion_nx,
+                -self.population_inversion.mesh_extent,
+                self.population_inversion.mesh_extent,
+                self.population_inversion.n_cells,
             )
-            a_y = np.linspace(
-                self.pop_inversion_ystart,
-                self.pop_inversion_yfin,
-                self.pop_inversion_ny,
-            )
+            a_y = a_x
             b_x = np.linspace(b.mesh.xStart, b.mesh.xFin, b.mesh.nx)
             b_y = np.linspace(b.mesh.yStart, b.mesh.yFin, b.mesh.ny)
 
@@ -704,15 +964,11 @@ class CrystalSlice(Element):
             a_x = a.x
             a_y = a.y
             b_x = np.linspace(
-                self.pop_inversion_xstart,
-                self.pop_inversion_xfin,
-                self.pop_inversion_nx,
+                -self.population_inversion.mesh_extent,
+                self.population_inversion.mesh_extent,
+                self.population_inversion.n_cells,
             )
-            b_y = np.linspace(
-                self.pop_inversion_ystart,
-                self.pop_inversion_yfin,
-                self.pop_inversion_ny,
-            )
+            b_y = b_x
 
         if not (np.array_equal(a_x, b_x) and np.array_equal(a_y, b_y)):
 
@@ -742,19 +998,19 @@ class CrystalSlice(Element):
         wfr_yvals: wfr array vertical points [m]
         """
         if np.shape(delta_n_array)[0] != np.size(wfr_xvals) or np.shape(delta_n_array)[1] != np.size(wfr_yvals):
-        
+
             # interpolate delta_n array to match shape of wfr mesh
             delta_n_interp_func = interpolate.RegularGridInterpolator((radpts, radpts), delta_n_array, method='linear', bounds_error=False)
             X, Y = np.meshgrid(wfr_xvals, wfr_yvals)
             delta_n_array_interp = delta_n_interp_func((X, Y))
-        
+
         else:
             delta_n_array_interp = delta_n_array
-         
+
         return delta_n_array_interp
-    
-    
-    
+
+
+
     def calc_gain(self, thisSlice):
 
         lp_wfr = thisSlice.wfr
@@ -764,8 +1020,8 @@ class CrystalSlice(Element):
         temp_pop_inversion = self._interpolate_a_to_b("pop_inversion", lp_wfr)
 
         # Calculate gain
-        absorp_cross_sec = 4.1e-23  # 3.0e-23             # [m^2]
-        degen_factor = 1.0  # Not sure what this value should be
+        cross_sec = splev(thisSlice._lambda0, self.cross_section_fn)  # [m^2]
+        degen_factor = 1.67
 
         dx = (lp_wfr.mesh.xFin - lp_wfr.mesh.xStart) / lp_wfr.mesh.nx  # [m]
         dy = (lp_wfr.mesh.yFin - lp_wfr.mesh.yStart) / lp_wfr.mesh.ny  # [m]
@@ -774,18 +1030,14 @@ class CrystalSlice(Element):
         energy_gain = np.zeros(np.shape(n_incident_photons))
         gain_condition = np.where(n_incident_photons > 0)
         energy_gain[gain_condition] = (
-            1.0 / (degen_factor * absorp_cross_sec * n_incident_photons[gain_condition])
+            1.0 / (degen_factor * cross_sec * n_incident_photons[gain_condition])
         ) * np.log(
             1
-            + np.exp(
-                absorp_cross_sec * temp_pop_inversion[gain_condition] * self.length
-            )
+            + np.exp(cross_sec * temp_pop_inversion[gain_condition] * self.length)
             * (
-                np.exp(
-                    degen_factor * absorp_cross_sec * n_incident_photons[gain_condition]
-                )
+                np.exp(degen_factor * cross_sec * n_incident_photons[gain_condition])
                 - 1.0
-            )  
+            )
         )
 
         # Calculate change factor for pop_inversion, note it has the same dimensions as lp_wfr
@@ -866,26 +1118,26 @@ class CrystalSlice(Element):
 
         thisSlice.wfr = wfr1
         return thisSlice
-    
+
     def nl_kick(self, thisSlice):
         print('nl_kick successfully called')
         # print('slice no.: %g' %(self.nslice))
-        print(r'shape of delta_n array before interpolation: (%g, %g)' %(np.shape(self.delta_n))) 
-        
+        print(r'shape of delta_n array before interpolation: (%g, %g)' %(np.shape(self.delta_n)))
+
         # self.delta_n_ystart = -params.delta_n_mesh_extent
         # self.delta_n_yfin = params.delta_n_mesh_extent
         radpts = np.linspace(self.delta_n_xstart, self.delta_n_xfin, np.size(self.delta_n[0]))
         print('radpts[50]: %g' %(radpts[50]))
         radpts_m = radpts / 1e2
         print('radpts_m[50]: %g' %(radpts_m[50]))
-        
+
         # calculate wavefront mesh values
-        
+
         lp_wfr = thisSlice.wfr
         wfr_xvals = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx),
         wfr_yvals = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny),
         # print('lp_wfr.mesh.xStart: %g, lp_wfr.mesh.xFin: %g' %(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin))
-        
+
         # print('wfr_xvals[40]: %g' %(wfr_xvals[40]))
         # print('wfr_xvals[40]:')
         # wx40 = wfr_xvals[40]
@@ -893,37 +1145,37 @@ class CrystalSlice(Element):
         # print('wfr_yvals[40]: %g' %(wfr_yvals[40]))
         # print('shape of wfr_xvals: %g' %(np.shape(wfr_xvals)))
         # print('size of wfr_xvals: %g' %(np.size(wfr_xvals)))
-        
-        
+
+
         print('delta_n[50][50]: %g' %(self.delta_n[50][50]))
-        
+
         # interpolate delta_n array to match wavefront mesh
         delta_n_interp = self.delta_n_to_wfr_interp(self.delta_n, radpts_m, wfr_xvals, wfr_yvals)
         print('delta_n_interp[50][50]: %g' %(delta_n_interp[50][50]))
-        
+
         # calculate wavelength [m]  from input energy
         hc_ev_um = 1.23984198  # hc [eV*um]
         phLambda = (
             hc_ev_um / thisSlice.photon_e_ev * 1e-6
         )
         # print('phLambda: %g [nm]' %(phLambda*1e9))
-        
+
         # calculate crystal slice length [m]
         # slice_length = self.length / self.nslice
         # print('self.length: %g' %self.length)
         # print('self.nslice: %g' %self.nslice)
         # print('slice length: %g' %slice_length)
-        
-        
+
+
         # define l / lambda parameter
         # l_over_lam = slice_length / phLambda
         l_over_lam = self.length / phLambda
         # print('l_over_lam: %g' %l_over_lam)
-        
-        # create nonlinear kick array 
+
+        # create nonlinear kick array
         nl_kick_array = np.exp(np.multiply(np.multiply(delta_n_interp, 1j), l_over_lam))
         print('Re{nl_kick_array[50][50]}: %g' %(np.real(nl_kick_array[50][50])))
-        
+
         # construct 2d numpy complex E_field from pulse wfr object
         # pol = 6 in calc_int_from_wfr() for full electric
         # field (0 corresponds to horizontal, 1 corresponds to vertical polarization)
@@ -959,15 +1211,15 @@ class CrystalSlice(Element):
 
         Etot0_2d_x = re0_2d_ex + 1j * im0_2d_ex
         Etot0_2d_y = re0_2d_ey + 1j * im0_2d_ey
-        
-        print('phase[40][89] %g' %(np.angle(Etot0_2d_x[40][79]))) 
-        
+
+        print('phase[40][89] %g' %(np.angle(Etot0_2d_x[40][79])))
+
         # multiply horizontal and vertical total E fields by nl kick array
         Etot0_2d_x_nl_kick = np.multiply(Etot0_2d_x, nl_kick_array)
         Etot0_2d_y_nl_kick = np.multiply(Etot0_2d_y, nl_kick_array)
-        
-        print('phase[40][79] %g' %(np.angle(Etot0_2d_x_nl_kick[40][79]))) 
-        
+
+        print('phase[40][79] %g' %(np.angle(Etot0_2d_x_nl_kick[40][79])))
+
         # return to SRW wavefront form
         ex_real = np.real(Etot0_2d_x_nl_kick).flatten(order="C")
         ex_imag = np.imag(Etot0_2d_x_nl_kick).flatten(order="C")
@@ -1006,12 +1258,268 @@ class CrystalSlice(Element):
         )
 
         thisSlice.wfr = wfr1
-        
+
         print(r'shape of delta_n array after interpolation: (%g, %g)' %(np.shape(delta_n_interp)))
-        
+
         print(r'value of delta_n[50][50]: %g' %(self.delta_n[50][50]))
-        
+
         return thisSlice
     # # return wfr1
     # return laser_pulse
-        
+
+
+
+def _calculate_mesh(crystal_length, crystal_diameter, mesh_density):
+    # geometry dimensions:
+    #    crystal_length [cm]
+    #    crystal_diameter [cm]
+
+    # derived parameters
+    rad = crystal_diameter / 2.0  # radius [cm]
+    lh = crystal_length / 2.0  # half-length [cm]
+    rad2 = rad**2.0  # radius squared [cm^2]
+
+    # cylinder = Cylinder('coordinate of center of the top circle',
+    #                     'coordinate of center of the bottom circle',
+    #                     'radius of the circle at the top',
+    #                     'radius of the circle at the bottom')
+    geometry = Cylinder(Point(0.0, 0.0, lh), Point(0.0, 0.0, -lh), rad, rad)
+    return generate_mesh(geometry, mesh_density)
+
+
+def _define_heat_load_expression(
+    pump_waist, absorption_coefficient, crystal_length, pump_power, pump_order
+):
+
+    w_p = pump_waist  # updated beam width [cm]
+    alpha_h = absorption_coefficient  # absorption coefficient [1/cm]
+    half_length = crystal_length / 2.0  # half-length [cm]
+
+    # calculate incremental temperature deposition
+    pump_wavelength = 532.0  # [nm]
+    seed_wavelength = 800.0  # [nm]
+    P_abs = (
+        pump_power * (seed_wavelength - pump_wavelength) / seed_wavelength
+    )  # absorbed power [W]
+    integral_gaus_order_n = (
+        2.0 ** ((pump_order - 2.0) / pump_order) * gamma(2.0 / pump_order)
+    ) / (pump_order * (1.0 / (w_p**pump_order)) ** (2.0 / pump_order))
+    V_eff = (
+        integral_gaus_order_n
+        * (np.pi / alpha_h)
+        * (1.0 - np.exp(-alpha_h * crystal_length))
+    )  # effective volume [cm^3]
+
+    K_c_tisaph = (
+        33.0 / 100.0
+    )  # thermal conductivity [W/cm/K] https://www.rp-photonics.com/titanium_sapphire_lasers.html
+
+    dQ_incr = P_abs / V_eff  # incremental heat deposition [W/cm^3]
+    dT_incr = dQ_incr / K_c_tisaph  # incremental temperature deposition [K/cm^2]
+
+    heat_load = Expression(
+        "dT * exp( -2.0 * pow(pow(x[0], 2.0) + pow(x[1], 2.0), order / 2.0) / (pow(w_p, order))) * exp(-alpha_h * (x[2] + lh))",
+        degree=1,
+        dT=dT_incr,
+        w_p=w_p,
+        alpha_h=alpha_h,
+        lh=half_length,
+        order=pump_order,
+    )
+    return heat_load
+
+
+def _calc_temperature_change(
+    pump_waist,
+    absorption_coefficient,
+    crystal_length,
+    crystal_diameter,
+    pump_energy,
+    pump_order,
+    xv,
+    zv,
+):
+
+    w_p = pump_waist  # updated beam width [cm]
+    alpha_h = absorption_coefficient  # absorption coefficient [1/cm]
+    half_length = crystal_length / 2.0  # half-length [cm]
+
+    # c_p is temperature and doping dependent, for now approximate with a single value
+    specific_heat_capacity = 0.7788  # J/g/K (at 300K, for sapphire)
+    density = 3.98  # g/cc
+
+    integral_gaus_order_n = (
+        2.0 ** ((pump_order - 2.0) / pump_order) * gamma(2.0 / pump_order)
+    ) / (pump_order * (1.0 / (w_p**pump_order)) ** (2.0 / pump_order))
+    # effective volume [cm^3]
+    V_eff = (
+        integral_gaus_order_n
+        * (np.pi / alpha_h)
+        * (1.0 - np.exp(-alpha_h * crystal_length))
+    )  # effective volume [cm^3]
+    mass = V_eff * density  # grams
+
+    pump_wavelength = 532.0  # [nm]
+    seed_wavelength = 800.0  # [nm]
+    J_abs = (
+        pump_energy * (seed_wavelength - pump_wavelength) / seed_wavelength
+    )  # absorbed energy [J]
+
+    xv_2d, zv_2d = np.meshgrid(xv, zv)
+
+    radial_term = np.exp(
+        -2.0 * (xv_2d**2.0) ** (pump_order / 2.0) / (w_p**pump_order)
+    )
+    longitudinal_term = np.exp(-alpha_h * (zv_2d + half_length))
+    magnitude_term = J_abs / (specific_heat_capacity * mass)
+
+    long_temp_profiles = magnitude_term * radial_term * longitudinal_term
+
+    return long_temp_profiles.T
+
+
+def _call_fenics(mesh, heat_load, crystal_diameter, initial_temp, zv, radial_pts):
+
+    # define function space on mesh
+    V = FunctionSpace(mesh, "P", 1)
+
+    rad = crystal_diameter / 2.0  # radius [cm]
+    rad2 = rad**2.0  # radius squared [cm^2]
+
+    # define Dirichlet boundary condition for sides at r_max
+    bc_tol = 2.0 * rad * (rad / 40.0)  # 2 * rad * delta(rad)
+
+    def boundary_D(x, on_boundary):
+        return on_boundary and near(x[0] * x[0] + x[1] * x[1], rad2, bc_tol)
+
+    boundary_condition = DirichletBC(V, Constant(initial_temp), boundary_D)
+
+    # define variational problem
+    fenics_solution = Function(V)
+    v = TestFunction(V)
+
+    # source term
+    f = heat_load
+
+    # differential eqn to be solved
+    F = (
+        dot(grad(fenics_solution), grad(v)) * dx - f * v * dx
+    )  # w/ Dirichlet + initial condition
+
+    # execute simulation
+    set_log_level(30)
+    solve(F == 0.0, fenics_solution, boundary_condition)
+
+    # note: throws an error to evaluate at the limits of radial_pts -
+    # reduce the value of radial_pts by some factor, rad_fac
+    rad_fac = 0.9
+
+    # longitudinal temperature profiles of a range of radii values ranging from +/- r_max
+    long_temp_profiles = np.zeros((len(radial_pts), len(zv)))
+    for j in range(len(radial_pts)):
+        long_temp_profiles[j] = [
+            fenics_solution(pt)
+            for pt in [(radial_pts[j][0] * rad_fac, 0.0, z_) for z_ in zv]
+        ]
+
+    return long_temp_profiles
+
+
+def _calc_T(long_temp_profiles, crystal_length, num_long_slices, zv, radial_pts):
+
+    dslice_ind = int(
+        (len(radial_pts) - 1) / num_long_slices
+    )  # size of of slice indeces
+
+    # divide long_temp_profiles into n longitudinal slices
+    uz_array = np.zeros((num_long_slices, dslice_ind, len(radial_pts)))
+    uz_array[0, :, :] = np.transpose(long_temp_profiles[:, 0:dslice_ind])
+    for j in range(num_long_slices - 1):
+        uz_array[j + 1, :, :] = np.transpose(
+            long_temp_profiles[:, (dslice_ind * (j + 1)) : (dslice_ind * (j + 2))]
+        )
+
+    # calculate longitudinal step size, dz
+    dz = (zv[len(zv) - 1] - zv[0]) / (len(zv) - 1.0)
+
+    radial_pts_x = np.array(radial_pts)[:, 0]
+
+    # integrate longitudinal temperature profiles
+    integrated_temps = np.zeros((num_long_slices, len(radial_pts_x)))
+    for j in range(num_long_slices):
+        for i in range(len(radial_pts_x)):
+            integrated_temps[j, i] = (
+                np.sum(uz_array[j, :, i]) * dz / (crystal_length / num_long_slices)
+            )
+
+    return integrated_temps
+
+
+def _calc_n_from_T(
+    num_long_slices, radial_pts, integrated_temps, laser_range_min, laser_range_max
+):
+    # Calculate index of refraction for each slice from T(r), using a formula from Tapping (1986)
+    # chi_T taken from: 'Thermal lens effect model of Ti:sapphire for use in high-power laser amplifiers' - Jeong 2018
+
+    chi_T = 1.28e-5
+    n_int_vals = np.zeros((num_long_slices, len(integrated_temps[0, :])))
+    for j in range(num_long_slices):
+        for i in range(len(integrated_temps[0, :])):
+            n_int_vals[j, i] = (
+                1.75991
+                + (chi_T * integrated_temps[j, i])
+                + (3.1e-9 * integrated_temps[j, i] ** 2.0)
+            )
+
+    def _quad_int0(x, A, B):
+        # quad fit function
+        y = A * x**2.0 + B
+        return y
+
+    radial_pts_x = np.array(radial_pts)[:, 0]
+
+    # create arrays for n_int(r) for region within laser radius and apply quadratic fit
+    # extract n0 and n2 values
+    n2_vals = np.zeros((num_long_slices))
+    n0_vals = np.zeros((num_long_slices))
+    parameters_q_intn = np.zeros((num_long_slices, 2))
+    covariance_q_intn = np.zeros((num_long_slices, 2, 2))
+    for j in range(num_long_slices):
+        parameters_q_intn[j, :], covariance_q_intn[j, :] = curve_fit(
+            _quad_int0,
+            radial_pts_x[laser_range_min:laser_range_max],
+            n_int_vals[j, laser_range_min:laser_range_max],
+        )
+        n2_vals[j] = parameters_q_intn[j, 0]
+        n0_vals[j] = parameters_q_intn[j, 1]
+
+    return n0_vals, n2_vals
+
+
+def _calc_full_abcd_mat(crystal_length, n0_vals, n2_vals):
+    # Calculate the ABCD matrix for the entire crystal
+
+    num_long_slices = len(n0_vals)
+    gamma_vals = np.zeros(num_long_slices)
+    abcd_mats = np.zeros((num_long_slices, 2, 2))
+    for j in range(num_long_slices):
+        # extract gamma_vals
+        gamma_vals[j] = np.sqrt(n2_vals[j] / n0_vals[j])
+        gamma_z = gamma_vals[j] * (crystal_length / num_long_slices)
+
+        # calculate ABCD matrices for each crystal slice
+        abcd_mats[j, 0, 0] = np.cos(gamma_z)
+        abcd_mats[j, 0, 1] = (1.0 / n0_vals[j] / gamma_vals[j]) * np.sin(gamma_z)
+        abcd_mats[j, 1, 0] = (-(n0_vals[j] * gamma_vals[j])) * np.sin(gamma_z)
+        abcd_mats[j, 1, 1] = np.cos(gamma_z)
+
+    # calculate total ABCD matrix by multiplying matrices for individual slices in order M_n-1 * M_n-2 * ... * M_0
+    abcd_mat_tot_full = np.array(
+        [[1, 0], [0, 1]]
+    )  # initialize total ABCD mat as identity for first multiplication with M_n-1
+    for j in range(num_long_slices):
+        abcd_mat_tot_full = np.matmul(
+            abcd_mat_tot_full, abcd_mats[num_long_slices - j - 1, :, :]
+        )
+
+    return abcd_mat_tot_full
