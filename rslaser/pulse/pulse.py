@@ -45,6 +45,7 @@ _LASER_PULSE_DEFAULTS = PKDict(
     poltype=1,
     mx=0,
     my=0,
+    phase_flatten_cutoff=0.85,
 )
 _ENVELOPE_DEFAULTS = PKDict(
     w0=0.1,
@@ -121,6 +122,7 @@ class LaserPulse(ValidatorBase):
         self.slice = []
         self.files = files
         self.pulse_direction = params.pulse_direction
+        self.flatten_cutoff = params.phase_flatten_cutoff
         self.sigx_waist = params.sigx_waist
         self.sigy_waist = params.sigy_waist
         self.num_sig_trans = params.num_sig_trans
@@ -219,10 +221,11 @@ class LaserPulse(ValidatorBase):
                 .astype(np.float64)
             )
 
-            flatten_cutoff = 0.90 * wfr.mesh.xFin
-            location_flatten = np.where(np.abs(r) >= flatten_cutoff)
+            location_flatten = np.where(
+                np.abs(r) >= (self.flatten_cutoff * wfr.mesh.xFin)
+            )
 
-            x_average = x[(np.abs(x - flatten_cutoff)).argmin()]
+            x_average = x[(np.abs(x - (self.flatten_cutoff * wfr.mesh.xFin))).argmin()]
             location_value = np.where(np.abs(r - x_average) <= np.diff(x)[0] / 2.0)
             flatten_value = np.mean(phase_2d[location_value])
 
