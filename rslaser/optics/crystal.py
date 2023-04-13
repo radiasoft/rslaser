@@ -171,6 +171,7 @@ class Crystal(Element):
                 laser_pulse = s.propagate(laser_pulse, prop_type, calc_gain)
 
             laser_pulse.resize_laser_mesh()
+            laser_pulse.flatten_phase_edges()
         return laser_pulse
 
 
