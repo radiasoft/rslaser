@@ -773,7 +773,7 @@ class CrystalSlice(Element):
         temp_pop_inversion = self._interpolate_a_to_b("pop_inversion", lp_wfr)
 
         # Calculate gain
-        absorp_cross_sec = 4.1e-23  # 3.0e-23             # [m^2]
+        absorp_cross_sec = 3.0e-23  # [m^2] 4.1e-23  #
         degen_factor = 1.67
 
         dx = (lp_wfr.mesh.xFin - lp_wfr.mesh.xStart) / lp_wfr.mesh.nx  # [m]

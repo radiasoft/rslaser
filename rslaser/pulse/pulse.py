@@ -39,7 +39,7 @@ _LASER_PULSE_DEFAULTS = PKDict(
     pulseE=0.001,
     sigx_waist=1.0e-3,
     sigy_waist=1.0e-3,
-    num_sig_trans=6,
+    num_sig_trans=4,  # 6,
     nx_slice=64,
     ny_slice=64,
     poltype=1,
@@ -380,11 +380,10 @@ class LaserPulse(ValidatorBase):
             xv, yv = np.meshgrid(x, y)
             r = np.sqrt(xv**2.0 + yv**2.0)
 
+            # Calculate the phase shift value
             x_loc = cut_offs[1]
-            y_loc = int(len(y) / 2.0)
-
-            value_max = x[x_loc - 1]
-            value_0 = x[x_loc]
+            value_max = x[x_loc]
+            value_0 = x[x_loc + 1]
             location_max = np.where(np.abs(r - value_max) <= np.diff(x)[0] / 2.0)
             location_0 = np.where(np.abs(r - value_0) <= np.diff(x)[0] / 2.0)
 
@@ -396,30 +395,36 @@ class LaserPulse(ValidatorBase):
             # Assign the n2 = 0 fields initially
             intensity = intensity_2d.n2_0
             phase = phase_2d.n2_0
-
             n2 = np.zeros(np.shape(intensity))
             self.slice[laser_index_i].n_photons_2d.mesh = laser_pulse_copies.n2_0.slice[
                 laser_index_i
             ].n_photons_2d.mesh
 
-            temp_x = np.linspace(0.0, 1.0, len(x[int(len(x) / 2.0) + 1 : cut_offs[1]]))
-            a = 1.0 - temp_x**2.0
+            # Calculate the scaling function
+            scaling_fn = np.zeros(np.shape(r))
+            location = np.where(np.abs(r) <= x[x_loc] + (np.diff(x)[0] / 2.0))
 
-            def scaling_fn(index, array_1, array_2):
-                return ((1.0 - a[index]) * array_1) + (a[index] * array_2)
-
-            for index, value in enumerate(
-                np.flip(x[int(len(x) / 2.0) + 1 : cut_offs[1]])
-            ):
-                location = np.where(r <= value)
-                n2[location] = scaling_fn(index, max_n2, 0.0)
-                intensity[location] = scaling_fn(
-                    index, intensity_2d.n2_max[location], intensity_2d.n2_0[location]
+            xv_temp = (xv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
+            yv_temp = (yv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
+            # scaling_fn[location] = 1.0 - (xv_temp[location]**2.0 + yv_temp[location]**2.0)
+            scaling_fn[location] = (
+                np.flip(
+                    np.cos(np.sqrt(xv_temp[location] ** 2.0 + yv_temp[location] ** 2.0))
                 )
-                phase[location] = scaling_fn(
-                    index, phase_2d.n2_max[location], phase_2d.n2_0[location]
-                )
+                + 1
+            ) / 2.0
 
+            n2[location] = ((1.0 - scaling_fn[location]) * 0.0) + (
+                scaling_fn[location] * max_n2
+            )
+            intensity[location] = (
+                (1.0 - scaling_fn[location]) * intensity_2d.n2_0[location]
+            ) + (scaling_fn[location] * intensity_2d.n2_max[location])
+            phase[location] = (
+                (1.0 - scaling_fn[location]) * phase_2d.n2_0[location]
+            ) + (scaling_fn[location] * phase_2d.n2_max[location])
+
+            # Calculate the fields
             e_norm = np.sqrt(2.0 * intensity / (const.c * const.epsilon_0))
             re_ex = np.multiply(e_norm, np.cos(phase))
             im_ex = np.multiply(e_norm, np.sin(phase))
