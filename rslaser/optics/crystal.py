@@ -11,6 +11,7 @@ import srwlib
 import scipy.constants as const
 from scipy.interpolate import RectBivariateSpline
 from scipy import interpolate
+from scipy.special import gamma
 from rsmath import lct as rslct
 from rslaser.utils.validator import ValidatorBase
 from rslaser.utils import srwl_uti_data as srwutil
@@ -42,6 +43,7 @@ _CRYSTAL_DEFAULTS = PKDict(
         pump_wavelength=532.0e-9,  # [m]
         pump_energy=0.0211,  # [J], pump laser energy onto the crystal
         pump_type="dual",
+        pump_gaussian_order=2.0,
     ),
 )
 
@@ -259,13 +261,19 @@ class CrystalSlice(Element):
             / self.population_inversion.crystal_alpha
         ) / (np.exp(-self.population_inversion.crystal_alpha * z) * self.length)
 
+        # integrate super-gaussian
+        g_order = self.population_inversion.pump_gaussian_order
+        integral_factor = (2 ** ((g_order - 2.0) / g_order) * gamma(2 / g_order)) / (
+            g_order
+            * (1 / (self.population_inversion.pump_waist**g_order)) ** (2.0 / g_order)
+        )
+
         # Create a default mesh of [num_excited_states/m^3]
         pop_inversion_mesh = (
             (self.population_inversion.pump_wavelength / (const.h * const.c))
             * (
                 (
-                    2.0
-                    * (
+                    (
                         1
                         - np.exp(
                             -self.population_inversion.crystal_alpha
@@ -277,11 +285,14 @@ class CrystalSlice(Element):
                     * self.population_inversion.pump_energy
                     * np.exp(
                         -2.0
-                        * (xv**2.0 + yv**2.0)
-                        / self.population_inversion.pump_waist**2.0
+                        * (
+                            np.sqrt(xv**2.0 + yv**2.0)
+                            / self.population_inversion.pump_waist
+                        )
+                        ** g_order
                     )
                 )
-                / (const.pi * self.population_inversion.pump_waist**2.0)
+                / (const.pi * integral_factor)
             )
             * np.exp(-self.population_inversion.crystal_alpha * z)
             * correction_factor
@@ -306,13 +317,19 @@ class CrystalSlice(Element):
             / self.population_inversion.crystal_alpha
         ) / (np.exp(-self.population_inversion.crystal_alpha * z) * self.length)
 
+        # integrate super-gaussian
+        g_order = self.population_inversion.pump_gaussian_order
+        integral_factor = (2 ** ((g_order - 2.0) / g_order) * gamma(2 / g_order)) / (
+            g_order
+            * (1 / (self.population_inversion.pump_waist**g_order)) ** (2.0 / g_order)
+        )
+
         # Create a default mesh of [num_excited_states/m^3]
         pop_inversion_mesh = (
             (self.population_inversion.pump_wavelength / (const.h * const.c))
             * (
                 (
-                    2.0
-                    * (
+                    (
                         1
                         - np.exp(
                             -self.population_inversion.crystal_alpha
@@ -324,11 +341,14 @@ class CrystalSlice(Element):
                     * self.population_inversion.pump_energy
                     * np.exp(
                         -2.0
-                        * (xv**2.0 + yv**2.0)
-                        / self.population_inversion.pump_waist**2.0
+                        * (
+                            np.sqrt(xv**2.0 + yv**2.0)
+                            / self.population_inversion.pump_waist
+                        )
+                        ** g_order
                     )
                 )
-                / (const.pi * self.population_inversion.pump_waist**2.0)
+                / (const.pi * integral_factor)
             )
             * np.exp(-self.population_inversion.crystal_alpha * z)
             * correction_factor
