@@ -10,6 +10,7 @@ from pykern.pkcollections import PKDict
 import srwlib
 import scipy.constants as const
 from scipy.interpolate import RectBivariateSpline
+from scipy import interpolate
 from rsmath import lct as rslct
 from rslaser.utils.validator import ValidatorBase
 from rslaser.utils import srwl_uti_data as srwutil
@@ -209,6 +210,16 @@ class CrystalSlice(Element):
         self.B = params.B
         self.C = params.C
         self.D = params.D
+
+        # Wavelength-dependent cross-section (P. F. Moulton, 1986)
+        wavelength = np.array(
+            [600, 625, 650, 700, 750, 800, 850, 900, 950, 1000, 1025, 1050]
+        ) * (1.0e-9)
+        cross_section = np.array(
+            [0.0, 0.02, 0.075, 0.437, 0.845, 0.99, 0.815, 0.6, 0.415, 0.276, 
+             0.255, 0.247]
+        ) * (4.8e-23)
+        self.cross_section_fn = interpolate.splrep(wavelength, cross_section)
 
         #  Assuming wfr0 exsts, created e.g. via
         #  wfr0=createGsnSrcSRW(sigrW,propLen,pulseE,poltype,photon_e_ev,sampFact,mx,my)
@@ -773,7 +784,9 @@ class CrystalSlice(Element):
         temp_pop_inversion = self._interpolate_a_to_b("pop_inversion", lp_wfr)
 
         # Calculate gain
-        absorp_cross_sec = 3.0e-23  # [m^2] 4.1e-23  #
+        cross_sec = interpolate.splev(
+            thisSlice._lambda0, self.cross_section_fn
+        )  # [m^2]
         degen_factor = 1.67
 
         dx = (lp_wfr.mesh.xFin - lp_wfr.mesh.xStart) / lp_wfr.mesh.nx  # [m]
@@ -783,16 +796,12 @@ class CrystalSlice(Element):
         energy_gain = np.zeros(np.shape(n_incident_photons))
         gain_condition = np.where(n_incident_photons > 0)
         energy_gain[gain_condition] = (
-            1.0 / (degen_factor * absorp_cross_sec * n_incident_photons[gain_condition])
+            1.0 / (degen_factor * cross_sec * n_incident_photons[gain_condition])
         ) * np.log(
             1
-            + np.exp(
-                absorp_cross_sec * temp_pop_inversion[gain_condition] * self.length
-            )
+            + np.exp(cross_sec * temp_pop_inversion[gain_condition] * self.length)
             * (
-                np.exp(
-                    degen_factor * absorp_cross_sec * n_incident_photons[gain_condition]
-                )
+                np.exp(degen_factor * cross_sec * n_incident_photons[gain_condition])
                 - 1.0
             )
         )
