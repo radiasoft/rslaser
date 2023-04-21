@@ -44,6 +44,8 @@ _CRYSTAL_DEFAULTS = PKDict(
         pump_energy=0.0211,  # [J], pump laser energy onto the crystal
         pump_type="dual",
         pump_gaussian_order=2.0,
+        pump_offset_x=0.0,
+        pump_offset_y=0.0,
     ),
 )
 
@@ -286,7 +288,7 @@ class CrystalSlice(Element):
                     * np.exp(
                         -2.0
                         * (
-                            np.sqrt(xv**2.0 + yv**2.0)
+                            np.sqrt((xv-self.population_inversion.pump_offset_x)**2.0 + (yv-self.population_inversion.pump_offset_y)**2.0)
                             / self.population_inversion.pump_waist
                         )
                         ** g_order
@@ -342,7 +344,7 @@ class CrystalSlice(Element):
                     * np.exp(
                         -2.0
                         * (
-                            np.sqrt(xv**2.0 + yv**2.0)
+                            np.sqrt((xv-self.population_inversion.pump_offset_x)**2.0 + (yv-self.population_inversion.pump_offset_y)**2.0)
                             / self.population_inversion.pump_waist
                         )
                         ** g_order
