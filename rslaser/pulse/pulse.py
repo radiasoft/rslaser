@@ -21,6 +21,7 @@ from scipy import special
 from scipy import signal
 from skimage import filters
 from skimage import img_as_float
+from skimage.restoration import unwrap_phase
 import scipy.optimize as opt
 import srwlib
 from srwlib import srwl
@@ -44,6 +45,7 @@ _LASER_PULSE_DEFAULTS = PKDict(
     poltype=1,
     mx=0,
     my=0,
+    phase_flatten_cutoff=0.85,
 )
 _ENVELOPE_DEFAULTS = PKDict(
     w0=0.1,
@@ -120,6 +122,7 @@ class LaserPulse(ValidatorBase):
         self.slice = []
         self.files = files
         self.pulse_direction = params.pulse_direction
+        self.flatten_cutoff = params.phase_flatten_cutoff
         self.sigx_waist = params.sigx_waist
         self.sigy_waist = params.sigy_waist
         self.num_sig_trans = params.num_sig_trans
@@ -195,6 +198,79 @@ class LaserPulse(ValidatorBase):
                     thisSlice.initial_laser_xy.x,
                     thisSlice.initial_laser_xy.y,
                 )
+
+    def flatten_phase_edges(self):
+
+        for laser_index_i in np.arange(self.nslice):
+
+            wfr = self.slice[laser_index_i].wfr
+
+            # identify radial distance of every cell
+            x = np.linspace(wfr.mesh.xStart, wfr.mesh.xFin, wfr.mesh.nx)
+            y = np.linspace(wfr.mesh.yStart, wfr.mesh.yFin, wfr.mesh.ny)
+            xv, yv = np.meshgrid(x, y)
+            r = np.sqrt(xv**2.0 + yv**2.0)
+
+            # extract the intensity and phase for all laser pulses
+            intensity_2d = srwutil.calc_int_from_elec(wfr)
+            phase_1d = srwlib.array("d", [0] * wfr.mesh.nx * wfr.mesh.ny)
+            srwl.CalcIntFromElecField(phase_1d, wfr, 0, 4, 3, wfr.mesh.eStart, 0, 0)
+            phase_2d = unwrap_phase(
+                np.array(phase_1d)
+                .reshape((wfr.mesh.nx, wfr.mesh.ny), order="C")
+                .astype(np.float64)
+            )
+
+            location_flatten = np.where(
+                np.abs(r) >= (self.flatten_cutoff * wfr.mesh.xFin)
+            )
+
+            x_average = x[(np.abs(x - (self.flatten_cutoff * wfr.mesh.xFin))).argmin()]
+            location_value = np.where(np.abs(r - x_average) <= np.diff(x)[0] / 2.0)
+            flatten_value = np.mean(phase_2d[location_value])
+
+            phase_2d[location_flatten] = flatten_value
+
+            e_norm = np.sqrt(2.0 * intensity_2d / (const.c * const.epsilon_0))
+            re_ex = np.multiply(e_norm, np.cos(phase_2d))
+            im_ex = np.multiply(e_norm, np.sin(phase_2d))
+            re_ey = np.zeros(np.shape(re_ex))
+            im_ey = np.zeros(np.shape(im_ex))
+
+            # remake the wavefront
+            self.slice[laser_index_i].wfr = srwutil.make_wavefront(
+                re_ex, im_ex, re_ey, im_ey, self.slice[laser_index_i].photon_e_ev, x, y
+            )
+
+    def extract_total_2d_phase(self):
+
+        self.flatten_phase_edges()
+
+        slice_n_photons = np.array([])
+        for laser_index_i in np.arange(self.nslice):
+            slice_n_photons = np.append(
+                slice_n_photons, np.sum(self.slice[laser_index_i].n_photons_2d.mesh)
+            )
+
+        total_phase_2d = np.zeros(
+            (self.slice[0].wfr.mesh.nx, self.slice[0].wfr.mesh.ny)
+        )
+        for laser_index_i in np.arange(self.nslice):
+            wfr = self.slice[laser_index_i].wfr
+            slice_phase_1d = srwlib.array("d", [0] * wfr.mesh.nx * wfr.mesh.ny)
+            srwlib.srwl.CalcIntFromElecField(
+                slice_phase_1d, wfr, 0, 4, 3, wfr.mesh.eStart, 0, 0
+            )
+            slice_phase_2d = unwrap_phase(
+                np.array(slice_phase_1d)
+                .reshape((wfr.mesh.nx, wfr.mesh.ny), order="C")
+                .astype(np.float64)
+            )
+
+            weight = slice_n_photons[laser_index_i] / np.sum(slice_n_photons)
+            total_phase_2d += slice_phase_2d * weight
+
+        return total_phase_2d
 
     def extract_total_2d_elec_fields(self):
         # Assumes gaussian shape
@@ -286,23 +362,15 @@ class LaserPulse(ValidatorBase):
                 phase_1d_0, wfr_0, 0, 4, 3, wfr_0.mesh.eStart, 0, 0
             )
             phase_2d = PKDict(
-                n2_max=np.unwrap(
-                    np.unwrap(
-                        np.array(phase_1d_max)
-                        .reshape((wfr_max.mesh.nx, wfr_max.mesh.ny), order="C")
-                        .astype(np.float64),
-                        axis=0,
-                    ),
-                    axis=1,
+                n2_max=unwrap_phase(
+                    np.array(phase_1d_max)
+                    .reshape((wfr_max.mesh.nx, wfr_max.mesh.ny), order="C")
+                    .astype(np.float64)
                 ),
-                n2_0=np.unwrap(
-                    np.unwrap(
-                        np.array(phase_1d_0)
-                        .reshape((wfr_0.mesh.nx, wfr_0.mesh.ny), order="C")
-                        .astype(np.float64),
-                        axis=0,
-                    ),
-                    axis=1,
+                n2_0=unwrap_phase(
+                    np.array(phase_1d_0)
+                    .reshape((wfr_0.mesh.nx, wfr_0.mesh.ny), order="C")
+                    .astype(np.float64)
                 ),
             )
 
@@ -312,40 +380,51 @@ class LaserPulse(ValidatorBase):
             xv, yv = np.meshgrid(x, y)
             r = np.sqrt(xv**2.0 + yv**2.0)
 
+            # Calculate the phase shift value
             x_loc = cut_offs[1]
-            y_loc = int(len(y) / 2.0)
-            shift_value = (
-                phase_2d.n2_max[x_loc - 1, y_loc] - phase_2d.n2_0[x_loc, y_loc]
-            )
+            value_max = x[x_loc]
+            value_0 = x[x_loc + 1]
+            location_max = np.where(np.abs(r - value_max) <= np.diff(x)[0] / 2.0)
+            location_0 = np.where(np.abs(r - value_0) <= np.diff(x)[0] / 2.0)
+
+            n2_max_average = np.mean(phase_2d.n2_max[location_max])
+            n2_0_average = np.mean(phase_2d.n2_0[location_0])
+            shift_value = n2_max_average - n2_0_average
             phase_2d.n2_0 += shift_value
 
             # Assign the n2 = 0 fields initially
             intensity = intensity_2d.n2_0
             phase = phase_2d.n2_0
-
             n2 = np.zeros(np.shape(intensity))
             self.slice[laser_index_i].n_photons_2d.mesh = laser_pulse_copies.n2_0.slice[
                 laser_index_i
             ].n_photons_2d.mesh
 
-            temp_x = np.linspace(0.0, 1.0, len(x[int(len(x) / 2.0) + 1 : cut_offs[1]]))
-            a = 1.0 - temp_x**2.0
+            # Calculate the scaling function
+            scaling_fn = np.zeros(np.shape(r))
+            location = np.where(np.abs(r) <= x[x_loc] + (np.diff(x)[0] / 2.0))
 
-            def scaling_fn(index, array_1, array_2):
-                return ((1.0 - a[index]) * array_1) + (a[index] * array_2)
-
-            for index, value in enumerate(
-                np.flip(x[int(len(x) / 2.0) + 1 : cut_offs[1]])
-            ):
-                location = np.where(r <= value)
-                n2[location] = scaling_fn(index, max_n2, 0.0)
-                intensity[location] = scaling_fn(
-                    index, intensity_2d.n2_max[location], intensity_2d.n2_0[location]
+            xv_temp = (xv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
+            yv_temp = (yv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
+            # scaling_fn[location] = 1.0 - (xv_temp[location]**2.0 + yv_temp[location]**2.0)
+            scaling_fn[location] = (
+                np.flip(
+                    np.cos(np.sqrt(xv_temp[location] ** 2.0 + yv_temp[location] ** 2.0))
                 )
-                phase[location] = scaling_fn(
-                    index, phase_2d.n2_max[location], phase_2d.n2_0[location]
-                )
+                + 1
+            ) / 2.0
 
+            n2[location] = ((1.0 - scaling_fn[location]) * 0.0) + (
+                scaling_fn[location] * max_n2
+            )
+            intensity[location] = (
+                (1.0 - scaling_fn[location]) * intensity_2d.n2_0[location]
+            ) + (scaling_fn[location] * intensity_2d.n2_max[location])
+            phase[location] = (
+                (1.0 - scaling_fn[location]) * phase_2d.n2_0[location]
+            ) + (scaling_fn[location] * phase_2d.n2_max[location])
+
+            # Calculate the fields
             e_norm = np.sqrt(2.0 * intensity / (const.c * const.epsilon_0))
             re_ex = np.multiply(e_norm, np.cos(phase))
             im_ex = np.multiply(e_norm, np.sin(phase))
@@ -379,6 +458,47 @@ class LaserPulse(ValidatorBase):
             new_re_ey_2d = np.flip(re_ey_2d)
             new_im_ey_2d = np.flip(im_ey_2d)
 
+            thisSlice.wfr = srwutil.make_wavefront(
+                new_re_ex_2d,
+                new_im_ex_2d,
+                new_re_ey_2d,
+                new_im_ey_2d,
+                thisSlice.photon_e_ev,
+                thisSlice.initial_laser_xy.x,
+                thisSlice.initial_laser_xy.y,
+            )
+
+    def zero_phase(self):
+        # Manually zero the phase
+        for laser_index_i in np.arange(self.nslice):
+            thisSlice = self.slice[laser_index_i]
+
+            # Extract horizontal component of electric field
+            re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
+                thisSlice.wfr, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
+            )
+            im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
+                thisSlice.wfr, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
+            )
+
+            # Reshape arrays from 1d to 2d
+            re_ex_2d = (
+                np.array(re0_ex)
+                .reshape((thisSlice.wfr.mesh.nx, thisSlice.wfr.mesh.ny), order="C")
+                .astype(np.float64)
+            )
+            im_ex_2d = (
+                np.array(im0_ex)
+                .reshape((thisSlice.wfr.mesh.nx, thisSlice.wfr.mesh.ny), order="C")
+                .astype(np.float64)
+            )
+
+            new_re_ex_2d = np.sqrt(re_ex_2d**2.0 + im_ex_2d**2.0)
+            new_im_ex_2d = np.zeros(np.shape(new_re_ex_2d))
+            new_re_ey_2d = np.zeros(np.shape(new_re_ex_2d))
+            new_im_ey_2d = np.zeros(np.shape(new_re_ex_2d))
+
+            # remake the wavefront
             thisSlice.wfr = srwutil.make_wavefront(
                 new_re_ex_2d,
                 new_im_ex_2d,
