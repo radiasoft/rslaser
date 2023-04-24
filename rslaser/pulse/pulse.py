@@ -340,7 +340,15 @@ class LaserPulse(ValidatorBase):
 
         return e_total
 
-    def combine_n2_variation(self, laser_pulse_copies, cut_offs, max_n2):
+    def combine_n2_variation(
+        self,
+        laser_pulse_copies,
+        radial_n2_factor,
+        pump_waist,
+        pump_offset_x,
+        pump_offset_y,
+        max_n2,
+    ):
 
         for laser_index_i in np.arange(self.nslice):
             # For each laser slice, combine the propagated wavefronts
@@ -374,18 +382,23 @@ class LaserPulse(ValidatorBase):
                 ),
             )
 
-            # identify radial distance of every cell
-            x = np.linspace(wfr_0.mesh.xStart, wfr_0.mesh.xFin, wfr_0.mesh.nx)
-            y = np.linspace(wfr_0.mesh.yStart, wfr_0.mesh.yFin, wfr_0.mesh.ny)
+            # identify shifted radial distance of every cell
+            x_unshifted = np.linspace(wfr_0.mesh.xStart, wfr_0.mesh.xFin, wfr_0.mesh.nx)
+            y_unshifted = np.linspace(wfr_0.mesh.yStart, wfr_0.mesh.yFin, wfr_0.mesh.ny)
+
+            # identify shifted radial distance of every cell
+            x = x_unshifted - pump_offset_x
+            y = y_unshifted - pump_offset_y
             xv, yv = np.meshgrid(x, y)
             r = np.sqrt(xv**2.0 + yv**2.0)
 
             # Calculate the phase shift value
-            x_loc = cut_offs[1]
-            value_max = x[x_loc]
-            value_0 = x[x_loc + 1]
-            location_max = np.where(np.abs(r - value_max) <= np.diff(x)[0] / 2.0)
-            location_0 = np.where(np.abs(r - value_0) <= np.diff(x)[0] / 2.0)
+            zero_cut_off = (
+                radial_n2_factor * pump_waist
+            )  # Outside this value is zero n2
+            x_loc = np.abs(x - zero_cut_off).argmin()
+            location_max = np.where(np.abs(r - x[x_loc]) <= np.diff(x)[0] / 2.0)
+            location_0 = np.where(np.abs(r - x[x_loc + 1]) <= np.diff(x)[0] / 2.0)
 
             n2_max_average = np.mean(phase_2d.n2_max[location_max])
             n2_0_average = np.mean(phase_2d.n2_0[location_0])
@@ -408,10 +421,7 @@ class LaserPulse(ValidatorBase):
             yv_temp = (yv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
             # scaling_fn[location] = 1.0 - (xv_temp[location]**2.0 + yv_temp[location]**2.0)
             scaling_fn[location] = (
-                np.flip(
-                    np.cos(np.sqrt(xv_temp[location] ** 2.0 + yv_temp[location] ** 2.0))
-                )
-                + 1
+                np.cos(np.sqrt(xv_temp[location] ** 2.0 + yv_temp[location] ** 2.0)) + 1
             ) / 2.0
 
             n2[location] = ((1.0 - scaling_fn[location]) * 0.0) + (
@@ -433,7 +443,13 @@ class LaserPulse(ValidatorBase):
 
             # remake the wavefront
             self.slice[laser_index_i].wfr = srwutil.make_wavefront(
-                re_ex, im_ex, re_ey, im_ey, self.slice[laser_index_i].photon_e_ev, x, y
+                re_ex,
+                im_ex,
+                re_ey,
+                im_ey,
+                self.slice[laser_index_i].photon_e_ev,
+                x_unshifted,
+                y_unshifted,
             )
 
         return self
