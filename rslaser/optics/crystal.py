@@ -35,6 +35,7 @@ _CRYSTAL_DEFAULTS = PKDict(
     B=1.41975385,
     C=-0.0023775,
     D=0.99896716,
+    radial_n2_factor=1.3,
     population_inversion=PKDict(
         n_cells=64,
         mesh_extent=0.01,  # [m]
@@ -44,6 +45,8 @@ _CRYSTAL_DEFAULTS = PKDict(
         pump_energy=0.0211,  # [J], pump laser energy onto the crystal
         pump_type="dual",
         pump_gaussian_order=2.0,
+        pump_offset_x=0.0,
+        pump_offset_y=0.0,
     ),
 )
 
@@ -151,24 +154,13 @@ class Crystal(Element):
                     laser_pulse_copies.n2_0, prop_type, calc_gain
                 )
 
-                x = np.linspace(
-                    laser_pulse.slice[0].wfr.mesh.xStart,
-                    laser_pulse.slice[0].wfr.mesh.xFin,
-                    laser_pulse.slice[0].wfr.mesh.nx,
-                )
-
-                zero_cut_off = (
-                    1.3 * s.population_inversion.pump_waist
-                )  # Outside this value is zero n2
-                linear_cut_off = s.population_inversion.pump_waist / np.sqrt(
-                    2.0
-                )  # This value and within is linear n2 (if used)
-                linear_index = (np.abs(x - linear_cut_off)).argmin()
-                zero_index = (np.abs(x - zero_cut_off)).argmin()
-
-                cut_offs = np.array([linear_index, zero_index])
                 laser_pulse = laser_pulse.combine_n2_variation(
-                    laser_pulse_copies, cut_offs, s.n2
+                    laser_pulse_copies,
+                    s.radial_n2_factor,
+                    s.population_inversion.pump_waist,
+                    s.population_inversion.pump_offset_x,
+                    s.population_inversion.pump_offset_y,
+                    s.n2,
                 )
             else:
                 laser_pulse = s.propagate(laser_pulse, prop_type, calc_gain)
@@ -212,6 +204,7 @@ class CrystalSlice(Element):
         self.B = params.B
         self.C = params.C
         self.D = params.D
+        self.radial_n2_factor = params.radial_n2_factor
 
         # Wavelength-dependent cross-section (P. F. Moulton, 1986)
         wavelength = np.array(
@@ -286,7 +279,10 @@ class CrystalSlice(Element):
                     * np.exp(
                         -2.0
                         * (
-                            np.sqrt(xv**2.0 + yv**2.0)
+                            np.sqrt(
+                                (xv - self.population_inversion.pump_offset_x) ** 2.0
+                                + (yv - self.population_inversion.pump_offset_y) ** 2.0
+                            )
                             / self.population_inversion.pump_waist
                         )
                         ** g_order
@@ -342,7 +338,10 @@ class CrystalSlice(Element):
                     * np.exp(
                         -2.0
                         * (
-                            np.sqrt(xv**2.0 + yv**2.0)
+                            np.sqrt(
+                                (xv - self.population_inversion.pump_offset_x) ** 2.0
+                                + (yv - self.population_inversion.pump_offset_y) ** 2.0
+                            )
                             / self.population_inversion.pump_waist
                         )
                         ** g_order
