@@ -396,9 +396,10 @@ class LaserPulse(ValidatorBase):
             zero_cut_off = (
                 radial_n2_factor * pump_waist
             )  # Outside this value is zero n2
-            x_loc = np.abs(x - zero_cut_off).argmin()
-            location_max = np.where(np.abs(r - x[x_loc]) <= np.diff(x)[0] / 2.0)
-            location_0 = np.where(np.abs(r - x[x_loc + 1]) <= np.diff(x)[0] / 2.0)
+            location_max = np.where(np.abs(r - zero_cut_off) <= np.diff(x)[0] / 2.0)
+            location_0 = np.where(
+                np.abs(r - (zero_cut_off + np.diff(x)[0])) <= np.diff(x)[0] / 2.0
+            )
 
             n2_max_average = np.mean(phase_2d.n2_max[location_max])
             n2_0_average = np.mean(phase_2d.n2_0[location_0])
@@ -415,11 +416,10 @@ class LaserPulse(ValidatorBase):
 
             # Calculate the scaling function
             scaling_fn = np.zeros(np.shape(r))
-            location = np.where(np.abs(r) <= x[x_loc] + (np.diff(x)[0] / 2.0))
+            location = np.where(np.abs(r) <= zero_cut_off + (np.diff(x)[0] / 2.0))
 
-            xv_temp = (xv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
-            yv_temp = (yv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
-            # scaling_fn[location] = 1.0 - (xv_temp[location]**2.0 + yv_temp[location]**2.0)
+            xv_temp = (xv / (zero_cut_off + (np.diff(x)[0] / 2.0))) * np.pi
+            yv_temp = (yv / (zero_cut_off + (np.diff(x)[0] / 2.0))) * np.pi
             scaling_fn[location] = (
                 np.cos(np.sqrt(xv_temp[location] ** 2.0 + yv_temp[location] ** 2.0)) + 1
             ) / 2.0
