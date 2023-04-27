@@ -668,37 +668,7 @@ class LaserPulseSlice(ValidatorBase):
             ccd_data[np.isnan(ccd_data)] = 0.0
 
             if np.sum(np.isnan(wfs_data)) != 0:
-                x = np.linspace(0, np.shape(wfs_data)[1] - 1, np.shape(wfs_data)[1])
-                y = np.linspace(0, np.shape(wfs_data)[0] - 1, np.shape(wfs_data)[0])
-                center = np.argwhere(wfs_data == np.max(wfs_data[~np.isnan(wfs_data)]))[
-                    0
-                ]
-                x2 = np.copy(x) - center[1]
-                y2 = np.copy(y) - center[0]
-
-                nan_indices = np.argwhere(np.isnan(wfs_data))
-                nan_r = np.sqrt(
-                    x2[nan_indices[:, 1]] ** 2.0 + y2[nan_indices[:, 0]] ** 2.0
-                )
-                new_nan_indices = nan_indices[np.argsort(nan_r)]
-
-                for x_index, y_index in new_nan_indices:
-                    x_temp = np.copy(x) - x[y_index]
-                    y_temp = np.copy(y) - y[x_index]
-                    xtv, ytv = np.meshgrid(x_temp, y_temp)
-                    r_temp = np.sqrt(xtv**2.0 + ytv**2.0)
-                    r3 = np.zeros(np.shape(r_temp)) + 0.3
-                    r3[~np.isnan(wfs_data)] = wfs_data[~np.isnan(wfs_data)]
-
-                    r2 = np.copy(r_temp)
-                    r2[np.isnan(wfs_data)] = np.max(r_temp) * 2.0
-                    closest_indices = np.argwhere(
-                        np.abs(r2 - r_temp[x_index, y_index])
-                        == np.min(np.abs(r2 - r_temp[x_index, y_index]))
-                    )
-                    wfs_data[x_index, y_index] = np.mean(
-                        r3[closest_indices[:, 0], closest_indices[:, 1]]
-                    )
+                wfs_data = _replace_phase_nan(wfs_data)
 
             nx_wfs = np.shape(wfs_data)[0]
             ny_wfs = np.shape(wfs_data)[1]
@@ -1408,3 +1378,38 @@ def gaussian_pad(data):
     data_new_smooth = gaussian_filter(data_new, sigma=blur)
 
     return data_new_smooth
+
+
+def _replace_phase_nan(wfs_data):
+    x = np.linspace(0, np.shape(wfs_data)[1] - 1, np.shape(wfs_data)[1])
+    y = np.linspace(0, np.shape(wfs_data)[0] - 1, np.shape(wfs_data)[0])
+    center = np.argwhere(wfs_data == np.max(wfs_data[~np.isnan(wfs_data)]))[0]
+    x_shifted = np.copy(x) - center[1]
+    y_shifted = np.copy(y) - center[0]
+
+    nan_indices = np.argwhere(np.isnan(wfs_data))
+    nan_r = np.sqrt(
+        x_shifted[nan_indices[:, 1]] ** 2.0 + y_shifted[nan_indices[:, 0]] ** 2.0
+    )
+    new_nan_indices = nan_indices[np.argsort(nan_r)]
+
+    for x_index, y_index in new_nan_indices:
+        x_temp = np.copy(x) - x[y_index]
+        y_temp = np.copy(y) - y[x_index]
+        xv_temp, yv_temp = np.meshgrid(x_temp, y_temp)
+        r_temp = np.sqrt(xv_temp**2.0 + yv_temp**2.0)
+        nan_location = r_temp[x_index, y_index]
+
+        closest_phase_data = np.zeros(np.shape(r_temp)) + 0.3
+        closest_phase_data[~np.isnan(wfs_data)] = wfs_data[~np.isnan(wfs_data)]
+
+        r_temp[np.isnan(wfs_data)] = np.max(r_temp) * 2.0
+
+        closest_indices = np.argwhere(
+            np.abs(r_temp - nan_location) == np.min(np.abs(r_temp - nan_location))
+        )
+        wfs_data[x_index, y_index] = np.mean(
+            closest_phase_data[closest_indices[:, 0], closest_indices[:, 1]]
+        )
+
+    return wfs_data
