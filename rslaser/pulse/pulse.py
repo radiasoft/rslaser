@@ -665,26 +665,65 @@ class LaserPulseSlice(ValidatorBase):
             wfs_data = np.genfromtxt(files.wfs, skip_header=1, skip_footer=0)
 
             # clean up any NaN's
-            indices = np.isnan(wfs_data)
-            wfs_data = _array_cleaner(wfs_data, indices)
+            ccd_data[np.isnan(ccd_data)] = 0.0
+
+            if np.sum(np.isnan(wfs_data)) != 0:
+                x = np.linspace(0, np.shape(wfs_data)[1] - 1, np.shape(wfs_data)[1])
+                y = np.linspace(0, np.shape(wfs_data)[0] - 1, np.shape(wfs_data)[0])
+                center = np.argwhere(wfs_data == np.max(wfs_data[~np.isnan(wfs_data)]))[
+                    0
+                ]
+                x2 = np.copy(x) - center[1]
+                y2 = np.copy(y) - center[0]
+
+                nan_indices = np.argwhere(np.isnan(wfs_data))
+                nan_r = np.sqrt(
+                    x2[nan_indices[:, 1]] ** 2.0 + y2[nan_indices[:, 0]] ** 2.0
+                )
+                new_nan_indices = nan_indices[np.argsort(nan_r)]
+
+                for x_index, y_index in new_nan_indices:
+                    x_temp = np.copy(x) - x[y_index]
+                    y_temp = np.copy(y) - y[x_index]
+                    xtv, ytv = np.meshgrid(x_temp, y_temp)
+                    r_temp = np.sqrt(xtv**2.0 + ytv**2.0)
+                    r3 = np.zeros(np.shape(r_temp)) + 0.3
+                    r3[~np.isnan(wfs_data)] = wfs_data[~np.isnan(wfs_data)]
+
+                    r2 = np.copy(r_temp)
+                    r2[np.isnan(wfs_data)] = np.max(r_temp) * 2.0
+                    closest_indices = np.argwhere(
+                        np.abs(r2 - r_temp[x_index, y_index])
+                        == np.min(np.abs(r2 - r_temp[x_index, y_index]))
+                    )
+                    wfs_data[x_index, y_index] = np.mean(
+                        r3[closest_indices[:, 0], closest_indices[:, 1]]
+                    )
 
             nx_wfs = np.shape(wfs_data)[0]
             ny_wfs = np.shape(wfs_data)[1]
             nx_ccd = np.shape(ccd_data)[0]
             ny_ccd = np.shape(ccd_data)[1]
 
+            edges = np.concatenate(
+                (wfs_data[0, :], wfs_data[1:, -1], wfs_data[-1, :-1], wfs_data[1:-1, 0])
+            )
+            edge_average = np.mean(edges)
+
             # Increase the shape to 64x64: pad wfs data with array edge, pad ccd data with zeros
             if nx_wfs < 64:
                 wfs_data = np.pad(
                     wfs_data,
                     ((int((64 - nx_wfs) / 2), int((64 - nx_wfs) / 2)), (0, 0)),
-                    mode="edge",
+                    mode="linear_ramp",  # "edge",
+                    end_values=edge_average,
                 )
             if ny_wfs < 64:
                 wfs_data = np.pad(
                     wfs_data,
                     ((0, 0), (int((64 - ny_wfs) / 2), int((64 - ny_wfs) / 2))),
-                    mode="edge",
+                    mode="linear_ramp",  # "edge",
+                    end_values=edge_average,
                 )
             if nx_ccd < 64:
                 ccd_data = np.pad(
