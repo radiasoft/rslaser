@@ -244,7 +244,7 @@ class LaserPulse(ValidatorBase):
 
     def extract_total_2d_phase(self):
 
-        self.flatten_phase_edges()
+        # self.flatten_phase_edges()
 
         slice_n_photons = np.array([])
         for laser_index_i in np.arange(self.nslice):
@@ -685,15 +685,15 @@ class LaserPulseSlice(ValidatorBase):
                 wfs_data = np.pad(
                     wfs_data,
                     ((int((64 - nx_wfs) / 2), int((64 - nx_wfs) / 2)), (0, 0)),
-                    mode="linear_ramp",  # "edge",
-                    end_values=edge_average,
+                    mode="constant",
+                    constant_values=np.nan,
                 )
             if ny_wfs < 64:
                 wfs_data = np.pad(
                     wfs_data,
                     ((0, 0), (int((64 - ny_wfs) / 2), int((64 - ny_wfs) / 2))),
-                    mode="linear_ramp",  # "edge",
-                    end_values=edge_average,
+                    mode="constant",
+                    constant_values=np.nan,
                 )
             if nx_ccd < 64:
                 ccd_data = np.pad(
@@ -708,6 +708,7 @@ class LaserPulseSlice(ValidatorBase):
                     mode="constant",
                 )
 
+            wfs_data = _replace_phase_nan(wfs_data)
             ccd_data = gaussian_pad(ccd_data)
 
             assert np.shape(wfs_data) == np.shape(
