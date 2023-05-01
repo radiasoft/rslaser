@@ -134,6 +134,12 @@ class Crystal(Element):
         elif laser_pulse.pulse_direction == 180.0:
             slice_array = self.slice[::-1]
 
+        # Iterate through laser_pulse and offset all of the fields
+        laser_pulse.shift_wavefront(
+            self.slice[0].population_inversion.pump_offset_x,
+            self.slice[0].population_inversion.pump_offset_y,
+        )
+
         for s in slice_array:
 
             if radial_n2:
@@ -158,8 +164,6 @@ class Crystal(Element):
                     laser_pulse_copies,
                     s.radial_n2_factor,
                     s.population_inversion.pump_waist,
-                    s.population_inversion.pump_offset_x,
-                    s.population_inversion.pump_offset_y,
                     s.n2,
                 )
             else:
@@ -167,6 +171,15 @@ class Crystal(Element):
 
             laser_pulse.resize_laser_mesh()
             laser_pulse.flatten_phase_edges()
+
+        # Iterate through laser_pulse and return all of the fields
+        laser_pulse.shift_wavefront(
+            -self.slice[0].population_inversion.pump_offset_x,
+            -self.slice[0].population_inversion.pump_offset_y,
+        )
+        laser_pulse.resize_laser_mesh()
+        laser_pulse.flatten_phase_edges()
+
         return laser_pulse
 
 

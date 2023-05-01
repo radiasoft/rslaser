@@ -340,13 +340,48 @@ class LaserPulse(ValidatorBase):
 
         return e_total
 
+    def shift_wavefront(
+        self,
+        pump_offset_x,
+        pump_offset_y,
+    ):
+
+        for laser_index_i in np.arange(self.nslice):
+            thisSlice = self.slice[laser_index_i]
+
+            x = np.linspace(
+                thisSlice.wfr.mesh.xStart,
+                thisSlice.wfr.mesh.xFin,
+                thisSlice.wfr.mesh.nx,
+            )
+            y = np.linspace(
+                thisSlice.wfr.mesh.yStart,
+                thisSlice.wfr.mesh.yFin,
+                thisSlice.wfr.mesh.ny,
+            )
+
+            new_x = x - pump_offset_x
+            new_y = y - pump_offset_y
+
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
+                thisSlice.wfr
+            )
+
+            thisSlice.wfr = srwutil.make_wavefront(
+                re_ex_2d,
+                im_ex_2d,
+                re_ey_2d,
+                im_ey_2d,
+                thisSlice.photon_e_ev,
+                new_x,
+                new_y,
+            )
+
     def combine_n2_variation(
         self,
         laser_pulse_copies,
         radial_n2_factor,
         pump_waist,
-        pump_offset_x,
-        pump_offset_y,
         max_n2,
     ):
 
@@ -382,13 +417,9 @@ class LaserPulse(ValidatorBase):
                 ),
             )
 
-            # identify shifted radial distance of every cell
-            x_unshifted = np.linspace(wfr_0.mesh.xStart, wfr_0.mesh.xFin, wfr_0.mesh.nx)
-            y_unshifted = np.linspace(wfr_0.mesh.yStart, wfr_0.mesh.yFin, wfr_0.mesh.ny)
-
-            # identify shifted radial distance of every cell
-            x = x_unshifted - pump_offset_x
-            y = y_unshifted - pump_offset_y
+            # identify radial distance of every cell
+            x = np.linspace(wfr_0.mesh.xStart, wfr_0.mesh.xFin, wfr_0.mesh.nx)
+            y = np.linspace(wfr_0.mesh.yStart, wfr_0.mesh.yFin, wfr_0.mesh.ny)
             xv, yv = np.meshgrid(x, y)
             r = np.sqrt(xv**2.0 + yv**2.0)
 
@@ -448,8 +479,8 @@ class LaserPulse(ValidatorBase):
                 re_ey,
                 im_ey,
                 self.slice[laser_index_i].photon_e_ev,
-                x_unshifted,
-                y_unshifted,
+                x,
+                y,
             )
 
         return self
