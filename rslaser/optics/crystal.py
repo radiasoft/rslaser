@@ -11,6 +11,7 @@ import srwlib
 import scipy.constants as const
 from scipy.interpolate import RectBivariateSpline
 from scipy.interpolate import splrep
+from scipy.interpolate import splev
 from scipy.optimize import curve_fit
 from scipy.special import gamma
 from rsmath import lct as rslct
@@ -73,6 +74,7 @@ class Crystal(Element):
     def __init__(self, params=None):
         params = self._get_params(params)
         self._validate_params(params)
+        self.params = params
 
         # Check if n2<0, throw an exception if true
         if (np.array(params.n2) < 0.0).any():
@@ -93,66 +95,6 @@ class Crystal(Element):
                 )
             )
             self.slice.append(CrystalSlice(params=p))
-
-    def _n_from_fenics(self, params):
-
-        mesh_density = 80  # value ≥ 120 will produce more accurate results; slower, but closer to numerical conversion
-        n_radpts = 201  # no. of radial points at which to extract data
-        n_longpts = 201  # no. of longitudinal points at which to extract data
-        initial_temp = 0.0  # deg C
-        num_long_slices = 180  # no. of longitudinal slices
-
-        # values need to be in [cm]
-        crystal_diameter = params.population_inversion.mesh_extent * 2.0 * 1.0e2
-        crystal_length = params.length * 1.0e2
-        pump_waist = params.population_inversion.pump_waist * 1.0e2
-        # value needs to be in [1/cm]
-        absorption_coefficient = params.population_inversion.crystal_alpha / 1.0e2
-        # value needs to be in [W]
-        pump_power = (
-            params.population_inversion.pump_energy
-            * params.population_inversion.pump_rep_rate
-        )
-
-        mesh_tol = 2.0e-2  # mesh tolerance
-        mesh = _calculate_mesh(crystal_length, crystal_diameter, mesh_density)
-        xvals = mesh.coordinates()[:, 0]
-        zvals = mesh.coordinates()[:, 2]
-        xmin, xmax = xvals.min(), xvals.max()
-        zmin, zmax = zvals.min(), zvals.max()
-        xv = np.linspace(xmin * (1.0 - mesh_tol), xmax * (1.0 - mesh_tol), n_radpts)
-        zv = np.linspace(zmin * (1.0 - mesh_tol), zmax * (1.0 - mesh_tol), n_longpts)
-        radial_pts = np.asarray([(x_, 0, 0) for x_ in xv])
-        laser_range_min = (
-            np.abs(radial_pts[:, 0] - (-0.5 * pump_waist))
-        ).argmin()  # min index value of center data range  # JVT +/- 0.5*w_p
-        laser_range_max = (
-            np.abs(radial_pts[:, 0] - (0.5 * pump_waist))
-        ).argmin()  # max index value of center data range  # JVT +/- 0.5*w_p
-
-        heat_load = _define_heat_load_expression(
-            pump_waist, absorption_coefficient, crystal_length, pump_power
-        )
-        fenics_solution = _call_fenics(mesh, heat_load, crystal_diameter, initial_temp)
-        integrated_temps = _calc_T(
-            fenics_solution, crystal_length, num_long_slices, zv, radial_pts
-        )
-
-        # Calculate index of refraction for each slice, from T(r)
-        n0_slice_array, n2_slice_array = _calc_n_from_T(
-            num_long_slices,
-            radial_pts,
-            integrated_temps,
-            laser_range_min,
-            laser_range_max,
-        )
-
-        # Calculate the ABCD matrix for the total crystal (usable with abcd_lct if no gain)
-        full_crystal_abcd_mat = _calc_full_abcd_mat(
-            crystal_length, n0_slice_array, n2_slice_array
-        )
-
-        return n0_slice_array, n2_slice_array, full_crystal_abcd_mat
 
     def _get_params(self, params):
         def _update_n0_and_n2(params_final, params, field):
@@ -233,6 +175,88 @@ class Crystal(Element):
             laser_pulse.flatten_phase_edges()
         return laser_pulse
 
+    def calc_n0n2_fenics(self, set_n=False, initial_temp=0.0, mesh_density=80):
+        # initial_temp [degC], 
+        # mesh_density [int]: value ≥ 120 will produce more accurate results; slower, but closer to numerical conversion
+        
+        n_radpts  = 201  # no. of radial points at which to extract data
+        n_longpts = 201  # no. of longitudinal points at which to extract data
+        num_long_slices = 180  # no. of longitudinal slices
+
+        # values need to be in [cm]
+        crystal_diameter = self.params.population_inversion.mesh_extent * 2.0 * 1.0e2
+        crystal_length   = self.length * 1.0e2
+        pump_waist = self.params.population_inversion.pump_waist * 1.0e2
+        # value needs to be in [1/cm]
+        absorption_coefficient = self.params.population_inversion.crystal_alpha / 1.0e2
+        # value needs to be in [W]
+        pump_power = (
+            self.params.population_inversion.pump_energy
+            * self.params.population_inversion.pump_rep_rate
+        )
+
+        mesh_tol = 2.0e-2  # mesh tolerance
+        mesh = _calculate_mesh(crystal_length, crystal_diameter, mesh_density)
+        xvals = mesh.coordinates()[:, 0]
+        zvals = mesh.coordinates()[:, 2]
+        xmin, xmax = xvals.min(), xvals.max()
+        zmin, zmax = zvals.min(), zvals.max()
+        xv = np.linspace(xmin * (1.0 - mesh_tol), xmax * (1.0 - mesh_tol), n_radpts)
+        zv = np.linspace(zmin * (1.0 - mesh_tol), zmax * (1.0 - mesh_tol), n_longpts)
+        radial_pts = np.asarray([(x_, 0, 0) for x_ in xv])
+        laser_range_min = (
+            np.abs(radial_pts[:, 0] - (-0.5 * pump_waist))
+        ).argmin()  # min index value of center data range  # JVT +/- 0.5*w_p
+        laser_range_max = (
+            np.abs(radial_pts[:, 0] - (0.5 * pump_waist))
+        ).argmin()  # max index value of center data range  # JVT +/- 0.5*w_p
+
+        heat_load = _define_heat_load_expression(
+            pump_waist, absorption_coefficient, crystal_length, pump_power
+        )
+        fenics_solution = _call_fenics(mesh, heat_load, crystal_diameter, initial_temp)
+        integrated_temps = _calc_T(
+            fenics_solution, crystal_length, num_long_slices, zv, radial_pts
+        )
+
+        # Calculate index of refraction for each slice, from T(r)
+        n0_full_array, n2_full_array = _calc_n_from_T(
+            num_long_slices,
+            radial_pts,
+            integrated_temps,
+            laser_range_min,
+            laser_range_max,
+        )
+
+        # Calculate the ABCD matrix for the total crystal (usable with abcd_lct if no gain)
+        full_crystal_abcd_mat = _calc_full_abcd_mat(
+            crystal_length, n0_full_array, n2_full_array
+        )
+        
+        z_full_array = np.linspace(0.0,self.length,len(n0_full_array))
+        n0_fit = splrep(z_full_array, n0_full_array)
+        n2_fit = splrep(z_full_array, n2_full_array *1.0e4)
+            
+        z_crystal_slice = (self.length /self.nslice) *(np.arange(self.nslice)+0.5)
+        n0_slice_array = splev(z_crystal_slice, n0_fit)
+        n2_slice_array = splev(z_crystal_slice, n2_fit)
+        
+        if self.params.population_inversion.pump_type == "right":
+            n0_output = n0_slice_array[::-1] 
+            n2_output = n2_slice_array[::-1] 
+        elif self.params.population_inversion.pump_type == "left":
+            n0_output = n0_slice_array
+            n2_output = n2_slice_array
+        elif self.params.population_inversion.pump_type == "dual":
+            n0_output = (n0_slice_array + n0_slice_array[::-1])/2.0
+            n2_output = n2_slice_array + n2_slice_array[::-1]
+        
+        if set_n:
+            for s in self.slice:
+                s.n0 = n0_output[s.slice_index]
+                s.n2 = n2_output[s.slice_index]
+        
+        return n0_output, n2_output, full_crystal_abcd_mat
 
 class CrystalSlice(Element):
     """
@@ -887,7 +911,7 @@ class CrystalSlice(Element):
         temp_pop_inversion = self._interpolate_a_to_b("pop_inversion", lp_wfr)
 
         # Calculate gain
-        cross_sec = interpolate.splev(
+        cross_sec = splev(
             thisSlice._lambda0, self.cross_section_fn
         )  # [m^2]
         degen_factor = 1.67
