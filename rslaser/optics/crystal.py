@@ -213,11 +213,10 @@ class Crystal(Element):
             np.abs(radial_pts[:, 0] - (0.5 * pump_waist))
         ).argmin()  # max index value of center data range  # JVT +/- 0.5*w_p
 
-        heat_load = _define_heat_load_expression(
-            pump_waist, absorption_coefficient, crystal_length, pump_power
-        )
-
         if self.params.population_inversion.pump_rep_rate == 1.0e3:
+            heat_load = _define_heat_load_expression(
+                pump_waist, absorption_coefficient, crystal_length, pump_power
+            )
             long_temp_profiles = _call_fenics(
                 mesh, heat_load, crystal_diameter, initial_temp, zv, radial_pts
             )
