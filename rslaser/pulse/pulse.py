@@ -244,7 +244,7 @@ class LaserPulse(ValidatorBase):
 
     def extract_total_2d_phase(self):
 
-        self.flatten_phase_edges()
+        # self.flatten_phase_edges()
 
         slice_n_photons = np.array([])
         for laser_index_i in np.arange(self.nslice):
@@ -340,13 +340,48 @@ class LaserPulse(ValidatorBase):
 
         return e_total
 
+    def shift_wavefront(
+        self,
+        pump_offset_x,
+        pump_offset_y,
+    ):
+
+        for laser_index_i in np.arange(self.nslice):
+            thisSlice = self.slice[laser_index_i]
+
+            x = np.linspace(
+                thisSlice.wfr.mesh.xStart,
+                thisSlice.wfr.mesh.xFin,
+                thisSlice.wfr.mesh.nx,
+            )
+            y = np.linspace(
+                thisSlice.wfr.mesh.yStart,
+                thisSlice.wfr.mesh.yFin,
+                thisSlice.wfr.mesh.ny,
+            )
+
+            new_x = x - pump_offset_x
+            new_y = y - pump_offset_y
+
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
+                thisSlice.wfr
+            )
+
+            thisSlice.wfr = srwutil.make_wavefront(
+                re_ex_2d,
+                im_ex_2d,
+                re_ey_2d,
+                im_ey_2d,
+                thisSlice.photon_e_ev,
+                new_x,
+                new_y,
+            )
+
     def combine_n2_variation(
         self,
         laser_pulse_copies,
         radial_n2_factor,
         pump_waist,
-        pump_offset_x,
-        pump_offset_y,
         max_n2,
     ):
 
@@ -382,13 +417,9 @@ class LaserPulse(ValidatorBase):
                 ),
             )
 
-            # identify shifted radial distance of every cell
-            x_unshifted = np.linspace(wfr_0.mesh.xStart, wfr_0.mesh.xFin, wfr_0.mesh.nx)
-            y_unshifted = np.linspace(wfr_0.mesh.yStart, wfr_0.mesh.yFin, wfr_0.mesh.ny)
-
-            # identify shifted radial distance of every cell
-            x = x_unshifted - pump_offset_x
-            y = y_unshifted - pump_offset_y
+            # identify radial distance of every cell
+            x = np.linspace(wfr_0.mesh.xStart, wfr_0.mesh.xFin, wfr_0.mesh.nx)
+            y = np.linspace(wfr_0.mesh.yStart, wfr_0.mesh.yFin, wfr_0.mesh.ny)
             xv, yv = np.meshgrid(x, y)
             r = np.sqrt(xv**2.0 + yv**2.0)
 
@@ -396,9 +427,10 @@ class LaserPulse(ValidatorBase):
             zero_cut_off = (
                 radial_n2_factor * pump_waist
             )  # Outside this value is zero n2
-            x_loc = np.abs(x - zero_cut_off).argmin()
-            location_max = np.where(np.abs(r - x[x_loc]) <= np.diff(x)[0] / 2.0)
-            location_0 = np.where(np.abs(r - x[x_loc + 1]) <= np.diff(x)[0] / 2.0)
+            location_max = np.where(np.abs(r - zero_cut_off) <= np.diff(x)[0] / 2.0)
+            location_0 = np.where(
+                np.abs(r - (zero_cut_off + np.diff(x)[0])) <= np.diff(x)[0] / 2.0
+            )
 
             n2_max_average = np.mean(phase_2d.n2_max[location_max])
             n2_0_average = np.mean(phase_2d.n2_0[location_0])
@@ -415,11 +447,10 @@ class LaserPulse(ValidatorBase):
 
             # Calculate the scaling function
             scaling_fn = np.zeros(np.shape(r))
-            location = np.where(np.abs(r) <= x[x_loc] + (np.diff(x)[0] / 2.0))
+            location = np.where(np.abs(r) <= zero_cut_off + (np.diff(x)[0] / 2.0))
 
-            xv_temp = (xv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
-            yv_temp = (yv / (x[x_loc] + (np.diff(x)[0] / 2.0))) * np.pi
-            # scaling_fn[location] = 1.0 - (xv_temp[location]**2.0 + yv_temp[location]**2.0)
+            xv_temp = (xv / (zero_cut_off + (np.diff(x)[0] / 2.0))) * np.pi
+            yv_temp = (yv / (zero_cut_off + (np.diff(x)[0] / 2.0))) * np.pi
             scaling_fn[location] = (
                 np.cos(np.sqrt(xv_temp[location] ** 2.0 + yv_temp[location] ** 2.0)) + 1
             ) / 2.0
@@ -448,8 +479,8 @@ class LaserPulse(ValidatorBase):
                 re_ey,
                 im_ey,
                 self.slice[laser_index_i].photon_e_ev,
-                x_unshifted,
-                y_unshifted,
+                x,
+                y,
             )
 
         return self
@@ -665,26 +696,35 @@ class LaserPulseSlice(ValidatorBase):
             wfs_data = np.genfromtxt(files.wfs, skip_header=1, skip_footer=0)
 
             # clean up any NaN's
-            indices = np.isnan(wfs_data)
-            wfs_data = _array_cleaner(wfs_data, indices)
+            ccd_data[np.isnan(ccd_data)] = 0.0
+
+            if np.sum(np.isnan(wfs_data)) != 0:
+                wfs_data = _replace_phase_nan(wfs_data)
 
             nx_wfs = np.shape(wfs_data)[0]
             ny_wfs = np.shape(wfs_data)[1]
             nx_ccd = np.shape(ccd_data)[0]
             ny_ccd = np.shape(ccd_data)[1]
 
+            edges = np.concatenate(
+                (wfs_data[0, :], wfs_data[1:, -1], wfs_data[-1, :-1], wfs_data[1:-1, 0])
+            )
+            edge_average = np.mean(edges)
+
             # Increase the shape to 64x64: pad wfs data with array edge, pad ccd data with zeros
             if nx_wfs < 64:
                 wfs_data = np.pad(
                     wfs_data,
                     ((int((64 - nx_wfs) / 2), int((64 - nx_wfs) / 2)), (0, 0)),
-                    mode="edge",
+                    mode="constant",
+                    constant_values=np.nan,
                 )
             if ny_wfs < 64:
                 wfs_data = np.pad(
                     wfs_data,
                     ((0, 0), (int((64 - ny_wfs) / 2), int((64 - ny_wfs) / 2))),
-                    mode="edge",
+                    mode="constant",
+                    constant_values=np.nan,
                 )
             if nx_ccd < 64:
                 ccd_data = np.pad(
@@ -699,6 +739,7 @@ class LaserPulseSlice(ValidatorBase):
                     mode="constant",
                 )
 
+            wfs_data = _replace_phase_nan(wfs_data)
             ccd_data = gaussian_pad(ccd_data)
 
             assert np.shape(wfs_data) == np.shape(
@@ -1369,3 +1410,38 @@ def gaussian_pad(data):
     data_new_smooth = gaussian_filter(data_new, sigma=blur)
 
     return data_new_smooth
+
+
+def _replace_phase_nan(wfs_data):
+    x = np.linspace(0, np.shape(wfs_data)[1] - 1, np.shape(wfs_data)[1])
+    y = np.linspace(0, np.shape(wfs_data)[0] - 1, np.shape(wfs_data)[0])
+    center = np.argwhere(wfs_data == np.max(wfs_data[~np.isnan(wfs_data)]))[0]
+    x_shifted = np.copy(x) - center[1]
+    y_shifted = np.copy(y) - center[0]
+
+    nan_indices = np.argwhere(np.isnan(wfs_data))
+    nan_r = np.sqrt(
+        x_shifted[nan_indices[:, 1]] ** 2.0 + y_shifted[nan_indices[:, 0]] ** 2.0
+    )
+    new_nan_indices = nan_indices[np.argsort(nan_r)]
+
+    for x_index, y_index in new_nan_indices:
+        x_temp = np.copy(x) - x[y_index]
+        y_temp = np.copy(y) - y[x_index]
+        xv_temp, yv_temp = np.meshgrid(x_temp, y_temp)
+        r_temp = np.sqrt(xv_temp**2.0 + yv_temp**2.0)
+        nan_location = r_temp[x_index, y_index]
+
+        closest_phase_data = np.zeros(np.shape(r_temp)) + 0.3
+        closest_phase_data[~np.isnan(wfs_data)] = wfs_data[~np.isnan(wfs_data)]
+
+        r_temp[np.isnan(wfs_data)] = np.max(r_temp) * 2.0
+
+        closest_indices = np.argwhere(
+            np.abs(r_temp - nan_location) == np.min(np.abs(r_temp - nan_location))
+        )
+        wfs_data[x_index, y_index] = np.mean(
+            closest_phase_data[closest_indices[:, 0], closest_indices[:, 1]]
+        )
+
+    return wfs_data
