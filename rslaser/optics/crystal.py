@@ -9,6 +9,7 @@ import copy
 from pykern.pkcollections import PKDict
 import srwlib
 import scipy.constants as const
+from scipy import interpolate
 from scipy.interpolate import RectBivariateSpline
 from rsmath import lct as rslct
 from rslaser.utils.validator import ValidatorBase
@@ -24,6 +25,7 @@ _CRYSTAL_DEFAULTS = PKDict(
     n2=[_N2_DEFAULT for _ in range(_N_SLICE_DEFAULT)],
     delta_n_array = None,
     delta_n = None,
+    delta_n_mesh_extent = 0.01, # range [m] of delta_n mesh assuming azimuthal symmetry
     length=0.2,
     l_scale=1,
     nslice=_N_SLICE_DEFAULT,
@@ -201,6 +203,7 @@ class CrystalSlice(Element):
         params = self._get_params(params)
         self._validate_params(params)
         self.length = params.length
+        self.nslice = params.nslice
         self.n0 = params.n0
         self.n2 = params.n2
         self.delta_n = params.delta_n
@@ -217,6 +220,10 @@ class CrystalSlice(Element):
         # n_x = wfr0.mesh.nx  #  nr of grid points in x
         # n_y = wfr0.mesh.ny  #  nr of grid points in y
         # sig_cr_sec = np.ones((n_x, n_y), dtype=np.float32)
+        
+        # create mesh for delta_n array
+        self.delta_n_xstart = -params.delta_n_mesh_extent
+        self.delta_n_xfin = params.delta_n_mesh_extent
 
         # 2d mesh of excited state density (sigma), populating it
         # and its params with dummy variables for interpolation
@@ -723,6 +730,31 @@ class CrystalSlice(Element):
 
         return temp_array
 
+    def delta_n_to_wfr_interp(self, delta_n_array, radpts, wfr_xvals, wfr_yvals):
+        """
+        This function interpolates an input delta_n array to match
+        the shape and range of a wavefront array (wfr_xvals, wfr_yvals)
+        if they are of different shape and/or range.
+
+        delta_n_array: input delta n array
+        radpts: delta_n array radius points [m] note: we assume azimuthal symmetry
+        wfr_xvals: wfr array horizontal points [m]
+        wfr_yvals: wfr array vertical points [m]
+        """
+        if np.shape(delta_n_array)[0] != np.size(wfr_xvals) or np.shape(delta_n_array)[1] != np.size(wfr_yvals):
+        
+            # interpolate delta_n array to match shape of wfr mesh
+            delta_n_interp_func = interpolate.RegularGridInterpolator((radpts, radpts), delta_n_array, method='linear', bounds_error=False)
+            X, Y = np.meshgrid(wfr_xvals, wfr_yvals)
+            delta_n_array_interp = delta_n_interp_func((X, Y))
+        
+        else:
+            delta_n_array_interp = delta_n_array
+         
+        return delta_n_array_interp
+    
+    
+    
     def calc_gain(self, thisSlice):
 
         lp_wfr = thisSlice.wfr
@@ -753,7 +785,7 @@ class CrystalSlice(Element):
                     degen_factor * absorp_cross_sec * n_incident_photons[gain_condition]
                 )
                 - 1.0
-            )
+            )  
         )
 
         # Calculate change factor for pop_inversion, note it has the same dimensions as lp_wfr
@@ -837,6 +869,122 @@ class CrystalSlice(Element):
     
     def nl_kick(self, thisSlice):
         print('nl_kick successfully called')
+        print(r'shape of delta_n array before interpolation: (%g, %g)' %(np.shape(self.delta_n))) 
+        
+        # self.delta_n_ystart = -params.delta_n_mesh_extent
+        # self.delta_n_yfin = params.delta_n_mesh_extent
+        radpts = np.linspace(self.delta_n_xstart, self.delta_n_xfin, np.size(self.delta_n[0]))
+
+        # calculate wavefront mesh values
+        lp_wfr = thisSlice.wfr
+        wfr_xvals = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx),
+        wfr_yvals = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny),
+        
+        # interpolate delta_n array to match wavefront mesh
+        delta_n_interp = self.delta_n_to_wfr_interp(self.delta_n, radpts, wfr_xvals, wfr_yvals)
+        
+        # calculate wavelength [m]  from input energy
+        hc_ev_um = 1.23984198  # hc [eV*um]
+        phLambda = (
+            hc_ev_um / thisSlice.photon_e_ev * 1e-6
+        ) 
+        
+        # calculate crystal slice length [m]
+        slice_length = self.length / self.nslice
+        
+        # define l / lambda parameter
+        l_over_lam = slice_length / phLambda
+        
+        # create nonlinear kick array 
+        nl_kick_array = np.exp(1j * np.multiply(delta_n_interp, l_over_lam))
+        
+        # construct 2d numpy complex E_field from pulse wfr object
+        # pol = 6 in calc_int_from_wfr() for full electric
+        # field (0 corresponds to horizontal, 1 corresponds to vertical polarization)
+        wfr0 = thisSlice.wfr
+
+        # horizontal component of electric field
+        re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
+            wfr0, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
+        )
+        im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
+            wfr0, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
+        )
+        re0_2d_ex = np.array(re0_ex).reshape(
+            (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
+        )
+        im0_2d_ex = np.array(im0_ex).reshape(
+            (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
+        )
+
+        # vertical componenent of electric field
+        re0_ey, re0_mesh_ey = srwutil.calc_int_from_wfr(
+            wfr0, _pol=1, _int_type=5, _det=None, _fname="", _pr=False
+        )
+        im0_ey, im0_mesh_ey = srwutil.calc_int_from_wfr(
+            wfr0, _pol=1, _int_type=6, _det=None, _fname="", _pr=False
+        )
+        re0_2d_ey = np.array(re0_ey).reshape(
+            (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
+        )
+        im0_2d_ey = np.array(im0_ey).reshape(
+            (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
+        )
+
+        Etot0_2d_x = re0_2d_ex + 1j * im0_2d_ex
+        Etot0_2d_y = re0_2d_ey + 1j * im0_2d_ey
+        
+        # multiply horizontal and vertical total E fields by nl kick array
+        Etot0_2d_x_nl_kick = np.multiply(Etot0_2d_x, nl_kick_array)
+        Etot0_2d_y_nl_kick = np.multiply(Etot0_2d_y, nl_kick_array)
+        
+        # return to SRW wavefront form
+        ex_real = np.real(Etot0_2d_x_nl_kick).flatten(order="C")
+        ex_imag = np.imag(Etot0_2d_x_nl_kick).flatten(order="C")
+
+        ey_real = np.real(Etot0_2d_y_nl_kick).flatten(order="C")
+        ey_imag = np.imag(Etot0_2d_y_nl_kick).flatten(order="C")
+
+        ex_numpy = np.zeros(2 * len(ex_real))
+        for i in range(len(ex_real)):
+            ex_numpy[2 * i] = ex_real[i]
+            ex_numpy[2 * i + 1] = ex_imag[i]
+
+        ey_numpy = np.zeros(2 * len(ey_real))
+        for i in range(len(ey_real)):
+            ey_numpy[2 * i] = ey_real[i]
+            ey_numpy[2 * i + 1] = ey_imag[i]
+
+        ex = array.array("f", ex_numpy.tolist())
+        ey = array.array("f", ey_numpy.tolist())
+
+        wfr1 = srwlib.SRWLWfr(
+            _arEx=ex,
+            _arEy=ey,
+            _typeE="f",
+            _eStart=thisSlice.photon_e_ev,
+            _eFin=thisSlice.photon_e_ev,
+            _ne=1,
+            _xStart=lp_wfr.mesh.xStart,
+            _xFin=lp_wfr.mesh.xFin,
+            _nx=lp_wfr.mesh.nx,
+            _yStart=lp_wfr.mesh.yStart,
+            _yFin=lp_wfr.mesh.yFin,
+            _ny=lp_wfr.mesh.ny,
+            _zStart=0.0,
+            _partBeam=None,
+        )
+
+        thisSlice.wfr = wfr1
+        return thisSlice
+    # # return wfr1
+    # return laser_pulse
+        
+
+        
+        
+        
+        print(r'shape of delta_n array after interpolation: (%g, %g)' %(np.shape(delta_n_interp)))
         
         print(self.delta_n[100][100])
         
