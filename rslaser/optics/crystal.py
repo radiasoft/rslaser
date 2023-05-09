@@ -207,6 +207,8 @@ class Crystal(Element):
         # value needs to be in [W]
         pump_power = pump_energy * self.params.population_inversion.pump_rep_rate
 
+        pump_gaussian_order = self.params.population_inversion.pump_gaussian_order
+
         mesh_tol = 2.0e-2  # mesh tolerance
         mesh = _calculate_mesh(crystal_length, crystal_diameter, mesh_density)
         xvals = mesh.coordinates()[:, 0]
@@ -228,7 +230,11 @@ class Crystal(Element):
 
         if self.params.population_inversion.pump_rep_rate == 1.0e3:
             heat_load = _define_heat_load_expression(
-                pump_waist, absorption_coefficient, crystal_length, pump_power
+                pump_waist,
+                absorption_coefficient,
+                crystal_length,
+                pump_power,
+                pump_gaussian_order,
             )
             long_temp_profiles = _call_fenics(
                 mesh, heat_load, crystal_diameter, initial_temp, zv, radial_pts
@@ -240,6 +246,7 @@ class Crystal(Element):
                 crystal_length,
                 crystal_diameter,
                 pump_energy,
+                pump_gaussian_order,
                 xv,
                 zv,
             )
@@ -265,6 +272,10 @@ class Crystal(Element):
 
         # fix negative n2 vals and ****divide through by 2 based on Gaussian duct definition n(r) = n0 - 1/2*n2*r^2**** - see rp-photonics.com
         n2_full_array = np.multiply(n2_full_array, -2.0)
+        n2_full_array = np.multiply(n2_full_array, 1.0e4)
+
+        # Look at why n2 goes negative...
+        n2_full_array[n2_full_array <= 0.0] = 1.0e-6
 
         # Calculate the ABCD matrix for the total crystal (usable with abcd_lct if no gain)
         full_crystal_abcd_mat = _calc_full_abcd_mat(
@@ -273,7 +284,7 @@ class Crystal(Element):
 
         z_full_array = np.linspace(0.0, self.length, len(n0_full_array))
         n0_fit = splrep(z_full_array, n0_full_array)
-        n2_fit = splrep(z_full_array, n2_full_array * 1.0e4)
+        n2_fit = splrep(z_full_array, n2_full_array)
 
         z_crystal_slice = (self.length / self.nslice) * (np.arange(self.nslice) + 0.5)
         n0_slice_array = splev(z_crystal_slice, n0_fit)
@@ -1069,7 +1080,7 @@ def _calculate_mesh(crystal_length, crystal_diameter, mesh_density):
 
 
 def _define_heat_load_expression(
-    pump_waist, absorption_coefficient, crystal_length, pump_power
+    pump_waist, absorption_coefficient, crystal_length, pump_power, pump_order
 ):
 
     w_p = pump_waist  # updated beam width [cm]
@@ -1082,8 +1093,13 @@ def _define_heat_load_expression(
     P_abs = (
         pump_power * (seed_wavelength - pump_wavelength) / seed_wavelength
     )  # absorbed power [W]
-    V_eff = (np.pi * w_p**2.0 / (2.0 * alpha_h)) * (
-        1.0 - np.exp(-alpha_h * crystal_length)
+    integral_gaus_order_n = (
+        2.0 ** ((pump_order - 2.0) / pump_order) * gamma(2.0 / pump_order)
+    ) / (pump_order * (1.0 / (w_p**pump_order)) ** (2.0 / pump_order))
+    V_eff = (
+        integral_gaus_order_n
+        * (np.pi / alpha_h)
+        * (1.0 - np.exp(-alpha_h * crystal_length))
     )  # effective volume [cm^3]
 
     K_c_tisaph = (
@@ -1093,15 +1109,16 @@ def _define_heat_load_expression(
     dQ_incr = P_abs / V_eff  # incremental heat deposition [W/cm^3]
     dT_incr = dQ_incr / K_c_tisaph  # incremental temperature deposition [K/cm^2]
 
-    gsn_bella_heat_load = Expression(
-        "dT * exp( -2.0 * (x[0] * x[0] + x[1] * x[1]) / (w_p * w_p)) * exp(-alpha_h * (x[2] + lh))",
+    heat_load = Expression(
+        "dT * exp( -2.0 * pow(pow(x[0], 2.0) + pow(x[1], 2.0), order / 2.0) / (pow(w_p, order))) * exp(-alpha_h * (x[2] + lh))",
         degree=1,
         dT=dT_incr,
         w_p=w_p,
         alpha_h=alpha_h,
         lh=half_length,
+        order=pump_order,
     )
-    return gsn_bella_heat_load
+    return heat_load
 
 
 def _calc_temperature_change(
@@ -1110,19 +1127,29 @@ def _calc_temperature_change(
     crystal_length,
     crystal_diameter,
     pump_energy,
+    pump_order,
     xv,
     zv,
 ):
 
-    # c_p is temperature and doping dependent, for now approximate with a single value
-    specific_heat_capacity = 0.7788  # J/g/K (at 300K, for sapphire)
-    sapphire_density = 3.98  # g/cc
-    crystal_volume = np.pi * (crystal_diameter / 2.0) ** 2.0 * crystal_length  # cm^3
-    mass = crystal_volume * sapphire_density  # grams
-
     w_p = pump_waist  # updated beam width [cm]
     alpha_h = absorption_coefficient  # absorption coefficient [1/cm]
     half_length = crystal_length / 2.0  # half-length [cm]
+
+    # c_p is temperature and doping dependent, for now approximate with a single value
+    specific_heat_capacity = 0.7788  # J/g/K (at 300K, for sapphire)
+    density = 3.98  # g/cc
+
+    integral_gaus_order_n = (
+        2.0 ** ((pump_order - 2.0) / pump_order) * gamma(2.0 / pump_order)
+    ) / (pump_order * (1.0 / (w_p**pump_order)) ** (2.0 / pump_order))
+    # effective volume [cm^3]
+    V_eff = (
+        integral_gaus_order_n
+        * (np.pi / alpha_h)
+        * (1.0 - np.exp(-alpha_h * crystal_length))
+    )  # effective volume [cm^3]
+    mass = V_eff * density  # grams
 
     pump_wavelength = 532.0  # [nm]
     seed_wavelength = 800.0  # [nm]
@@ -1132,7 +1159,9 @@ def _calc_temperature_change(
 
     xv_2d, zv_2d = np.meshgrid(xv, zv)
 
-    radial_term = np.exp(-2.0 * (xv_2d**2.0) / (w_p * w_p))
+    radial_term = np.exp(
+        -2.0 * (xv_2d**2.0) ** (pump_order / 2.0) / (w_p**pump_order)
+    )
     longitudinal_term = np.exp(-alpha_h * (zv_2d + half_length))
     magnitude_term = J_abs / (specific_heat_capacity * mass)
 
