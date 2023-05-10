@@ -869,34 +869,60 @@ class CrystalSlice(Element):
     
     def nl_kick(self, thisSlice):
         print('nl_kick successfully called')
+        # print('slice no.: %g' %(self.nslice))
         print(r'shape of delta_n array before interpolation: (%g, %g)' %(np.shape(self.delta_n))) 
         
         # self.delta_n_ystart = -params.delta_n_mesh_extent
         # self.delta_n_yfin = params.delta_n_mesh_extent
         radpts = np.linspace(self.delta_n_xstart, self.delta_n_xfin, np.size(self.delta_n[0]))
-
+        print('radpts[50]: %g' %(radpts[50]))
+        radpts_m = radpts / 1e2
+        print('radpts_m[50]: %g' %(radpts_m[50]))
+        
         # calculate wavefront mesh values
+        
         lp_wfr = thisSlice.wfr
         wfr_xvals = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx),
         wfr_yvals = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny),
+        # print('lp_wfr.mesh.xStart: %g, lp_wfr.mesh.xFin: %g' %(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin))
+        
+        # print('wfr_xvals[40]: %g' %(wfr_xvals[40]))
+        # print('wfr_xvals[40]:')
+        # wx40 = wfr_xvals[40]
+        # print(wx40)
+        # print('wfr_yvals[40]: %g' %(wfr_yvals[40]))
+        # print('shape of wfr_xvals: %g' %(np.shape(wfr_xvals)))
+        # print('size of wfr_xvals: %g' %(np.size(wfr_xvals)))
+        
+        
+        print('delta_n[50][50]: %g' %(self.delta_n[50][50]))
         
         # interpolate delta_n array to match wavefront mesh
-        delta_n_interp = self.delta_n_to_wfr_interp(self.delta_n, radpts, wfr_xvals, wfr_yvals)
+        delta_n_interp = self.delta_n_to_wfr_interp(self.delta_n, radpts_m, wfr_xvals, wfr_yvals)
+        print('delta_n_interp[50][50]: %g' %(delta_n_interp[50][50]))
         
         # calculate wavelength [m]  from input energy
         hc_ev_um = 1.23984198  # hc [eV*um]
         phLambda = (
             hc_ev_um / thisSlice.photon_e_ev * 1e-6
-        ) 
+        )
+        # print('phLambda: %g [nm]' %(phLambda*1e9))
         
         # calculate crystal slice length [m]
-        slice_length = self.length / self.nslice
+        # slice_length = self.length / self.nslice
+        # print('self.length: %g' %self.length)
+        # print('self.nslice: %g' %self.nslice)
+        # print('slice length: %g' %slice_length)
+        
         
         # define l / lambda parameter
-        l_over_lam = slice_length / phLambda
+        # l_over_lam = slice_length / phLambda
+        l_over_lam = self.length / phLambda
+        # print('l_over_lam: %g' %l_over_lam)
         
         # create nonlinear kick array 
-        nl_kick_array = np.exp(1j * np.multiply(delta_n_interp, l_over_lam))
+        nl_kick_array = np.exp(np.multiply(np.multiply(delta_n_interp, 1j), l_over_lam))
+        print('Re{nl_kick_array[50][50]}: %g' %(np.real(nl_kick_array[50][50])))
         
         # construct 2d numpy complex E_field from pulse wfr object
         # pol = 6 in calc_int_from_wfr() for full electric
@@ -934,9 +960,13 @@ class CrystalSlice(Element):
         Etot0_2d_x = re0_2d_ex + 1j * im0_2d_ex
         Etot0_2d_y = re0_2d_ey + 1j * im0_2d_ey
         
+        print('phase[40][89] %g' %(np.angle(Etot0_2d_x[40][79]))) 
+        
         # multiply horizontal and vertical total E fields by nl kick array
         Etot0_2d_x_nl_kick = np.multiply(Etot0_2d_x, nl_kick_array)
         Etot0_2d_y_nl_kick = np.multiply(Etot0_2d_y, nl_kick_array)
+        
+        print('phase[40][79] %g' %(np.angle(Etot0_2d_x_nl_kick[40][79]))) 
         
         # return to SRW wavefront form
         ex_real = np.real(Etot0_2d_x_nl_kick).flatten(order="C")
@@ -976,17 +1006,12 @@ class CrystalSlice(Element):
         )
 
         thisSlice.wfr = wfr1
-        return thisSlice
-    # # return wfr1
-    # return laser_pulse
-        
-
-        
-        
         
         print(r'shape of delta_n array after interpolation: (%g, %g)' %(np.shape(delta_n_interp)))
         
-        print(self.delta_n[100][100])
+        print(r'value of delta_n[50][50]: %g' %(self.delta_n[50][50]))
         
         return thisSlice
+    # # return wfr1
+    # return laser_pulse
         
