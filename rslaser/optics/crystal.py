@@ -195,17 +195,17 @@ class Crystal(Element):
         num_long_slices = 180  # no. of longitudinal slices
 
         # values need to be in [cm]
-        crystal_diameter = self.params.population_inversion.mesh_extent * 2.0 * 1.0e2
+        crystal_diameter = self.params.pop_inversion_mesh_extent * 2.0 * 1.0e2
         crystal_length = self.length * 1.0e2
-        pump_waist = self.params.population_inversion.pump_waist * 1.0e2
+        pump_waist = self.params.pop_inversion_pump_waist * 1.0e2
         # value needs to be in [1/cm]
-        absorption_coefficient = self.params.population_inversion.crystal_alpha / 1.0e2
+        absorption_coefficient = self.params.pop_inversion_crystal_alpha / 1.0e2
         # value needs to be in [J]
-        pump_energy = self.params.population_inversion.pump_energy
+        pump_energy = self.params.pop_inversion_pump_energy
         # value needs to be in [W]
-        pump_power = pump_energy * self.params.population_inversion.pump_rep_rate
+        pump_power = pump_energy * self.params.pop_inversion_pump_rep_rate
 
-        pump_gaussian_order = self.params.population_inversion.pump_gaussian_order
+        pump_gaussian_order = self.params.pop_inversion_pump_gaussian_order
 
         mesh_tol = 2.0e-2  # mesh tolerance
         mesh = _calculate_mesh(crystal_length, crystal_diameter, mesh_density)
@@ -226,7 +226,7 @@ class Crystal(Element):
             np.abs(radial_pts[:, 0] - (0.5 * pump_waist))
         ).argmin()  # max index value of center data range  # JVT +/- 0.5*w_p
 
-        if self.params.population_inversion.pump_rep_rate == 1.0e3:
+        if self.params.pop_inversion_pump_rep_rate == 1.0e3:
             heat_load = _define_heat_load_expression(
                 pump_waist,
                 absorption_coefficient,
@@ -237,7 +237,7 @@ class Crystal(Element):
             long_temp_profiles = _call_fenics(
                 mesh, heat_load, crystal_diameter, initial_temp, zv, radial_pts
             )
-        elif self.params.population_inversion.pump_rep_rate == 1.0:
+        elif self.params.pop_inversion_pump_rep_rate == 1.0:
             long_temp_profiles = _calc_temperature_change(
                 pump_waist,
                 absorption_coefficient,
@@ -251,7 +251,7 @@ class Crystal(Element):
         else:
             print(
                 "No method implemented for a rep rate of {}.".format(
-                    self.params.population_inversion.pump_rep_rate
+                    self.params.pop_inversion_pump_rep_rate
                 )
             )
 
@@ -288,13 +288,13 @@ class Crystal(Element):
         n0_slice_array = splev(z_crystal_slice, n0_fit)
         n2_slice_array = splev(z_crystal_slice, n2_fit)
 
-        if self.params.population_inversion.pump_type == "right":
+        if self.params.pop_inversion_pump_type == "right":
             n0_output = n0_slice_array[::-1]
             n2_output = n2_slice_array[::-1]
-        elif self.params.population_inversion.pump_type == "left":
+        elif self.params.pop_inversion_pump_type == "left":
             n0_output = n0_slice_array
             n2_output = n2_slice_array
-        elif self.params.population_inversion.pump_type == "dual":
+        elif self.params.pop_inversion_pump_type == "dual":
             n0_output = (n0_slice_array + n0_slice_array[::-1]) / 2.0
             n2_output = n2_slice_array + n2_slice_array[::-1]
 
