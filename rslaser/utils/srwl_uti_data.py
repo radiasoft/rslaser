@@ -397,15 +397,17 @@ def make_wavefront(ex_re_2d, ex_im_2d, ey_re_2d, ey_im_2d, photon_e_ev, x, y):
     im_ey = ey_im_2d.flatten(order="C")
 
     # Combine real and imaginary fields into srw-preferred format
-    ex_numpy = np.zeros(2 * len(re_ex))
-    for i in range(len(re_ex)):
-        ex_numpy[2 * i] = re_ex[i]
-        ex_numpy[2 * i + 1] = im_ex[i]
+    ex_numpy = np.array((re_ex, im_ex)).T.ravel()
+    # ex_numpy = np.zeros(2 * len(re_ex))
+    # for i in range(len(re_ex)):
+    #     ex_numpy[2 * i] = re_ex[i]
+    #     ex_numpy[2 * i + 1] = im_ex[i]
 
-    ey_numpy = np.zeros(2 * len(re_ey))
-    for i in range(len(re_ey)):
-        ey_numpy[2 * i] = re_ey[i]
-        ey_numpy[2 * i + 1] = im_ey[i]
+    ey_numpy = np.array((re_ey, im_ey)).T.ravel()
+    # ey_numpy = np.zeros(2 * len(re_ey))
+    # for i in range(len(re_ey)):
+    #     ey_numpy[2 * i] = re_ey[i]
+    #     ey_numpy[2 * i + 1] = im_ey[i]
 
     # Convert to list
     ex = array("f", ex_numpy.tolist())
