@@ -7,9 +7,10 @@ import array
 import math
 import copy
 from pykern.pkcollections import PKDict
+from pykern.pkdebug import pkdp
 import srwlib
 import scipy.constants as const
-from scipy.interpolate import RectBivariateSpline
+from scipy.interpolate import RectBivariateSpline, RegularGridInterpolator
 from scipy.interpolate import splrep
 from scipy.interpolate import splev
 from scipy.optimize import curve_fit
@@ -21,12 +22,16 @@ from rslaser.optics.element import ElementException, Element
 from fenics import *
 from mshr import *
 
+
 _N_SLICE_DEFAULT = 50
 _N0_DEFAULT = 1.75
 _N2_DEFAULT = 0.001
 _CRYSTAL_DEFAULTS = PKDict(
     n0=[_N0_DEFAULT for _ in range(_N_SLICE_DEFAULT)],
     n2=[_N2_DEFAULT for _ in range(_N_SLICE_DEFAULT)],
+    delta_n_array=None,
+    delta_n=None,
+    delta_n_mesh_extent=0.01,  # range [m] of delta_n mesh assuming azimuthal symmetry
     length=0.2,
     l_scale=1,
     nslice=_N_SLICE_DEFAULT,
@@ -82,12 +87,16 @@ class Crystal(Element):
         self.nslice = params.nslice
         self.l_scale = params.l_scale
         self.slice = []
+
         for j in range(self.nslice):
             p = params.copy()
             p.update(
                 PKDict(
                     n0=params.n0[j],
                     n2=params.n2[j],
+                    delta_n=params.delta_n_array[j]
+                    if params.delta_n_array is not None
+                    else None,
                     length=params.length / params.nslice,
                     slice_index=j,
                 )
@@ -126,7 +135,9 @@ class Crystal(Element):
                 p.nslice = min(len(p.n0), len(p.n2))
         return p
 
-    def propagate(self, laser_pulse, prop_type, calc_gain=False, radial_n2=False):
+    def propagate(
+        self, laser_pulse, prop_type, calc_gain=False, radial_n2=False, nl_kick=False
+    ):
         assert (laser_pulse.pulse_direction == 0.0) or (
             laser_pulse.pulse_direction == 180.0
         ), "ERROR -- Propagation not implemented for the pulse direction {}".format(
@@ -143,7 +154,6 @@ class Crystal(Element):
             self.slice[0].population_inversion.pump_offset_x,
             self.slice[0].population_inversion.pump_offset_y,
         )
-
         for s in slice_array:
 
             if radial_n2:
@@ -171,11 +181,9 @@ class Crystal(Element):
                     s.n2,
                 )
             else:
-                laser_pulse = s.propagate(laser_pulse, prop_type, calc_gain)
-
+                laser_pulse = s.propagate(laser_pulse, prop_type, calc_gain, nl_kick)
             laser_pulse.resize_laser_mesh()
             laser_pulse.flatten_phase_edges()
-
         # Iterate through laser_pulse and return all of the fields
         laser_pulse.shift_wavefront(
             -self.slice[0].population_inversion.pump_offset_x,
@@ -183,7 +191,6 @@ class Crystal(Element):
         )
         laser_pulse.resize_laser_mesh()
         laser_pulse.flatten_phase_edges()
-
         return laser_pulse
 
     def calc_n0n2_fenics(self, set_n=False, initial_temp=0.0, mesh_density=80):
@@ -331,9 +338,11 @@ class CrystalSlice(Element):
         params = self._get_params(params)
         self._validate_params(params)
         self.length = params.length
+        self.nslice = params.nslice
         self.slice_index = params.slice_index
         self.n0 = params.n0
         self.n2 = params.n2
+        self.delta_n = params.delta_n
         self.l_scale = params.l_scale
         # self.pop_inv = params._pop_inv
         self.A = params.A
@@ -369,6 +378,10 @@ class CrystalSlice(Element):
         # n_x = wfr0.mesh.nx  #  nr of grid points in x
         # n_y = wfr0.mesh.ny  #  nr of grid points in y
         # sig_cr_sec = np.ones((n_x, n_y), dtype=np.float32)
+
+        # create mesh for delta_n array
+        self.delta_n_xstart = -params.delta_n_mesh_extent
+        self.delta_n_xfin = params.delta_n_mesh_extent
 
         # 2d mesh of excited state density (sigma)
         self._initialize_excited_states_mesh(params, params.nslice)
@@ -522,7 +535,7 @@ class CrystalSlice(Element):
             right=self._right_pump,
         )[self.population_inversion.pump_type](nslice, xv, yv)
 
-    def _propagate_attenuate(self, laser_pulse, calc_gain):
+    def _propagate_attenuate(self, laser_pulse, calc_gain, nl_kick):
         # n_x = wfront.mesh.nx  #  nr of grid points in x
         # n_y = wfront.mesh.ny  #  nr of grid points in y
         # sig_cr_sec = np.ones((n_x, n_y), dtype=np.float32)
@@ -537,7 +550,7 @@ class CrystalSlice(Element):
             f'{self}.propagate() with prop_type="attenuate" is not currently supported'
         )
 
-    def _propagate_placeholder(self, laser_pulse, calc_gain):
+    def _propagate_placeholder(self, laser_pulse, calc_gain, nl_kick):
         # nslices = len(laser_pulse.slice)
         # for i in np.arange(nslices):
         #     print ('Pulse slice ', i+1, ' of ', nslices, ' propagated through crystal slice.')
@@ -546,7 +559,7 @@ class CrystalSlice(Element):
             f'{self}.propagate() with prop_type="placeholder" is not currently supported'
         )
 
-    def _propagate_n0n2_lct(self, laser_pulse, calc_gain):
+    def _propagate_n0n2_lct(self, laser_pulse, calc_gain, nl_kick):
         # print('prop_type = n0n2_lct')
         nslices_pulse = len(laser_pulse.slice)
         L_cryst = self.length
@@ -581,6 +594,8 @@ class CrystalSlice(Element):
             thisSlice = laser_pulse.slice[i]
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
+            if nl_kick:
+                thisSlice = self.nl_kick(thisSlice)
 
             # construct 2d numpy complex E_field from pulse wfr object
             # pol = 6 in calc_int_from_wfr() for full electric
@@ -694,7 +709,7 @@ class CrystalSlice(Element):
         # return wfr1
         return laser_pulse
 
-    def _propagate_abcd_lct(self, laser_pulse, calc_gain):
+    def _propagate_abcd_lct(self, laser_pulse, calc_gain, nl_kick):
         # print('prop_type = abcd_lct')
         nslices_pulse = len(laser_pulse.slice)
         l_scale = self.l_scale
@@ -724,6 +739,8 @@ class CrystalSlice(Element):
             thisSlice = laser_pulse.slice[i]
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
+            if nl_kick:
+                thisSlice = self.nl_kick(thisSlice)
 
             # construct 2d numpy complex E_field from pulse wfr object
             # pol = 6 in calc_int_from_wfr() for full electric
@@ -837,8 +854,7 @@ class CrystalSlice(Element):
         # return wfr1
         return laser_pulse
 
-    def _propagate_n0n2_srw(self, laser_pulse, calc_gain):
-        # print('prop_type = n0n2_srw')
+    def _propagate_n0n2_srw(self, laser_pulse, calc_gain, nl_kick):
         nslices = len(laser_pulse.slice)
         L_cryst = self.length
         n0 = self.n0
@@ -849,7 +865,9 @@ class CrystalSlice(Element):
             thisSlice = laser_pulse.slice[i]
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
-
+            if nl_kick:
+                thisSlice = self.nl_kick(thisSlice)
+            # print(type(thisSlice))
             if n2 == 0:
                 # print('n2 = 0')
                 # A = 1.0
@@ -892,23 +910,33 @@ class CrystalSlice(Element):
             # print('Propagated pulse slice ', i+1, ' of ', nslices)
         return laser_pulse
 
-    def _propagate_gain_calc(self, laser_pulse, calc_gain):
+    def _propagate_gain_calc(self, laser_pulse, calc_gain, nl_kick):
         # calculates gain regardles of calc_gain param value
         for i in np.arange(len(laser_pulse.slice)):
             thisSlice = laser_pulse.slice[i]
             thisSlice = self.calc_gain(thisSlice)
         return laser_pulse
 
-    def propagate(self, laser_pulse, prop_type, calc_gain=False):
-        return PKDict(
+    def _propagate_nl_kick(self, laser_pulse, nl_kick):
+        # applies NL kick regardless of nl_kick param value
+        for i in np.arange(len(laser_pulse.slice)):
+            thisSlice = laser_pulse.slice[i]
+            thisSlice = self.nl_kick(thisSlice)
+        return laser_pulse
+
+    def propagate(self, laser_pulse, prop_type, calc_gain=False, nl_kick=False):
+        if prop_type == "default":
+            super().propagate(laser_pulse)
+            return
+        r = PKDict(
             attenuate=self._propagate_attenuate,
             placeholder=self._propagate_placeholder,
             abcd_lct=self._propagate_abcd_lct,
             n0n2_lct=self._propagate_n0n2_lct,
             n0n2_srw=self._propagate_n0n2_srw,
             gain_calc=self._propagate_gain_calc,
-            default=super().propagate,
-        )[prop_type](laser_pulse, calc_gain)
+        )[prop_type](laser_pulse, calc_gain, nl_kick)
+        return r
 
     def _interpolate_a_to_b(self, a, b):
         if a == "pop_inversion":
@@ -952,6 +980,33 @@ class CrystalSlice(Element):
             temp_array[:, b_y < np.min(a_y)] = 0.0
 
         return temp_array
+
+    def delta_n_to_wfr_interp(self, delta_n_array, radpts, wfr_xvals, wfr_yvals):
+        """
+        This function interpolates an input delta_n array to match
+        the shape and range of a wavefront array (wfr_xvals, wfr_yvals)
+        if they are of different shape and/or range.
+
+        delta_n_array: input delta n array
+        radpts: delta_n array radius points [m] note: we assume azimuthal symmetry
+        wfr_xvals: wfr array horizontal points [m]
+        wfr_yvals: wfr array vertical points [m]
+        """
+        if np.shape(delta_n_array)[0] != np.size(wfr_xvals) or np.shape(delta_n_array)[
+            1
+        ] != np.size(wfr_yvals):
+
+            # interpolate delta_n array to match shape of wfr mesh
+            delta_n_interp_func = RegularGridInterpolator(
+                (radpts, radpts), delta_n_array, method="linear", bounds_error=False
+            )
+            X, Y = np.meshgrid(wfr_xvals, wfr_yvals)
+            delta_n_array_interp = delta_n_interp_func((X, Y))
+
+        else:
+            delta_n_array_interp = delta_n_array
+
+        return delta_n_array_interp
 
     def calc_gain(self, thisSlice):
 
@@ -1059,6 +1114,99 @@ class CrystalSlice(Element):
         )
 
         thisSlice.wfr = wfr1
+        return thisSlice
+
+    def nl_kick(self, thisSlice):
+        radpts = np.linspace(
+            self.delta_n_xstart, self.delta_n_xfin, np.size(self.delta_n[0])
+        )
+        radpts_m = radpts / 1e2
+
+        # calculate wavefront mesh values
+
+        lp_wfr = thisSlice.wfr
+        wfr_xvals = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx)
+        wfr_yvals = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny)
+        delta_n_interp = self.delta_n_to_wfr_interp(
+            self.delta_n, radpts_m, wfr_xvals, wfr_yvals
+        )
+
+        # calculate wavelength [m]  from input energy
+        hc_ev_um = 1.23984198  # hc [eV*um]
+        phLambda = hc_ev_um / thisSlice.photon_e_ev * 1e-6
+        l_over_lam = self.length / phLambda
+        # print('l_over_lam: %g' %l_over_lam)
+
+        # create nonlinear kick array
+        nl_kick_array = np.exp(np.multiply(np.multiply(delta_n_interp, 1j), l_over_lam))
+        wfr0 = thisSlice.wfr
+
+        # horizontal component of electric field
+        re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
+            wfr0, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
+        )
+        im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
+            wfr0, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
+        )
+        re0_2d_ex = np.array(re0_ex).reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
+        im0_2d_ex = np.array(im0_ex).reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
+
+        # vertical componenent of electric field
+        re0_ey, re0_mesh_ey = srwutil.calc_int_from_wfr(
+            wfr0, _pol=1, _int_type=5, _det=None, _fname="", _pr=False
+        )
+        im0_ey, im0_mesh_ey = srwutil.calc_int_from_wfr(
+            wfr0, _pol=1, _int_type=6, _det=None, _fname="", _pr=False
+        )
+        re0_2d_ey = np.array(re0_ey).reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
+        im0_2d_ey = np.array(im0_ey).reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
+
+        Etot0_2d_x = re0_2d_ex + 1j * im0_2d_ex
+        Etot0_2d_y = re0_2d_ey + 1j * im0_2d_ey
+
+        # multiply horizontal and vertical total E fields by nl kick array
+        Etot0_2d_x_nl_kick = np.multiply(Etot0_2d_x, nl_kick_array)
+        Etot0_2d_y_nl_kick = np.multiply(Etot0_2d_y, nl_kick_array)
+
+        # return to SRW wavefront form
+        ex_real = np.real(Etot0_2d_x_nl_kick).flatten(order="C")
+        ex_imag = np.imag(Etot0_2d_x_nl_kick).flatten(order="C")
+
+        ey_real = np.real(Etot0_2d_y_nl_kick).flatten(order="C")
+        ey_imag = np.imag(Etot0_2d_y_nl_kick).flatten(order="C")
+
+        ex_numpy = np.zeros(2 * len(ex_real))
+        for i in range(len(ex_real)):
+            ex_numpy[2 * i] = ex_real[i]
+            ex_numpy[2 * i + 1] = ex_imag[i]
+
+        ey_numpy = np.zeros(2 * len(ey_real))
+        for i in range(len(ey_real)):
+            ey_numpy[2 * i] = ey_real[i]
+            ey_numpy[2 * i + 1] = ey_imag[i]
+
+        ex = array.array("f", ex_numpy.tolist())
+        ey = array.array("f", ey_numpy.tolist())
+
+        wfr1 = srwlib.SRWLWfr(
+            _arEx=ex,
+            _arEy=ey,
+            _typeE="f",
+            _eStart=thisSlice.photon_e_ev,
+            _eFin=thisSlice.photon_e_ev,
+            _ne=1,
+            _xStart=lp_wfr.mesh.xStart,
+            _xFin=lp_wfr.mesh.xFin,
+            _nx=lp_wfr.mesh.nx,
+            _yStart=lp_wfr.mesh.yStart,
+            _yFin=lp_wfr.mesh.yFin,
+            _ny=lp_wfr.mesh.ny,
+            _zStart=0.0,
+            _partBeam=None,
+        )
+
+        thisSlice.wfr = wfr1
+
         return thisSlice
 
 

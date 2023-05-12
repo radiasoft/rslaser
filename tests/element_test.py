@@ -6,7 +6,9 @@ import pykern.pkunit
 import pytest
 from rslaser.optics import element, lens, drift, crystal
 from rslaser.pulse import pulse
+from scipy import constants
 import srwlib
+import numpy
 
 
 def test_instantiation01():
@@ -27,6 +29,42 @@ def test_instantiation01():
             pop_inversion_n_cells=32,
         )
     )
+
+
+def test_crystal_nl_kick():
+    data_dir = pykern.pkunit.data_dir()
+    p = pulse.LaserPulse(
+        PKDict(
+            photon_e_ev=1.23984198 / (799e-9 * 1e6),
+            nslice=1,
+            nx_slice=80,
+            ny_slice=80,
+            pulseE=1.0e-6,
+            tau_fwhm=(4 * numpy.pi * (1.64e-3 / 2) ** 2 / 799e-9) / constants.c * 2.355,
+            sigx_waist=1.64e-3 / 2,
+            sigy_waist=1.64e-3 / 2,
+            num_sig_trans=6,
+        )
+    )
+    c = crystal.Crystal(
+        PKDict(
+            length=0.025,
+            nslice=1,
+            n0=[1.76],
+            n2=[12.151572393382056],
+            delta_n_array=numpy.load(str(data_dir.join("delta_narray.npy"))),
+            delta_n_mesh_extent=numpy.max(
+                numpy.loadtxt(data_dir.join("radpts.txt"), delimiter=",")
+            ),
+            l_scale=1e-3,
+            A=0.99736924,
+            B=1.41972275 / 1e2,
+            C=-0.00260693 * 1e2,
+            D=0.99892682,
+        )
+    )
+    c.propagate(p, "n0n2_srw", nl_kick=True)
+    c.propagate(p, "n0n2_srw")
 
 
 def test_crystal_nslice():
