@@ -580,7 +580,8 @@ class CrystalSlice(Element):
         # calculate components of ABCD matrix corrected with wavelength and scale factor for use in LCT algorithm
         gamma = np.sqrt(n2 / n0)
         A = np.cos(gamma * L_cryst)
-        B = (1 / gamma) * np.sin(gamma * L_cryst) * phLambda / (l_scale**2)
+        #B = (1 / gamma) * np.sin(gamma * L_cryst) * phLambda / (l_scale**2)
+        B = phLambda * L_cryst / (l_scale**2) * np.sinc(gamma * L_cryst / np.pi) 
         C = -gamma * np.sin(gamma * L_cryst) / phLambda * (l_scale**2)
         D = np.cos(gamma * L_cryst)
         abcd_mat_cryst = np.array([[A, B], [C, D]])
