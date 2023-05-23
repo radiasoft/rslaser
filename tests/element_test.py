@@ -38,7 +38,6 @@ def test_crystal_nl_kick():
             photon_e_ev=1.23984198 / (799e-9 * 1e6),
             nslice=1,
             nx_slice=80,
-            ny_slice=80,
             pulseE=1.0e-6,
             tau_fwhm=(4 * numpy.pi * (1.64e-3 / 2) ** 2 / 799e-9) / constants.c * 2.355,
             sigx_waist=1.64e-3 / 2,
@@ -113,7 +112,6 @@ def test_prop_with_gain():
         p = pulse.LaserPulse(
             PKDict(
                 nx_slice=32,
-                ny_slice=32,
             )
         )
         c.propagate(p, prop_type, calc_gain=True)
