@@ -33,7 +33,7 @@ _CRYSTAL_DEFAULTS = PKDict(
     delta_n=None,
     delta_n_mesh_extent=0.01,  # range [m] of delta_n mesh assuming azimuthal symmetry
     length=0.2,
-    l_scale=1,
+    l_scale=0.1,
     nslice=_N_SLICE_DEFAULT,
     slice_index=0,
     # A = 9.99988571e-01,
@@ -182,15 +182,16 @@ class Crystal(Element):
                 )
             else:
                 laser_pulse = s.propagate(laser_pulse, prop_type, calc_gain, nl_kick)
-            laser_pulse.resize_laser_mesh()
-            laser_pulse.flatten_phase_edges()
+            # laser_pulse.resize_laser_mesh()
+            # laser_pulse.flatten_phase_edges()
+
         # Iterate through laser_pulse and return all of the fields
         laser_pulse.shift_wavefront(
             -self.slice[0].population_inversion.pump_offset_x,
             -self.slice[0].population_inversion.pump_offset_y,
         )
         laser_pulse.resize_laser_mesh()
-        laser_pulse.flatten_phase_edges()
+        # laser_pulse.flatten_phase_edges()
         return laser_pulse
 
     def calc_n0n2_fenics(self, set_n=False, initial_temp=0.0, mesh_density=80):
@@ -282,11 +283,6 @@ class Crystal(Element):
         # Look at why n2 goes negative...
         n2_full_array[n2_full_array <= 0.0] = 1.0e-6
 
-        # Calculate the ABCD matrix for the total crystal (usable with abcd_lct if no gain)
-        full_crystal_abcd_mat = _calc_full_abcd_mat(
-            crystal_length, n0_full_array, n2_full_array
-        )
-
         z_full_array = np.linspace(0.0, self.length, len(n0_full_array))
         n0_fit = splrep(z_full_array, n0_full_array)
         n2_fit = splrep(z_full_array, n2_full_array)
@@ -304,6 +300,11 @@ class Crystal(Element):
         elif self.params.pop_inversion_pump_type == "dual":
             n0_output = (n0_slice_array + n0_slice_array[::-1]) / 2.0
             n2_output = n2_slice_array + n2_slice_array[::-1]
+
+        # Calculate the ABCD matrix for the total crystal (usable with abcd_lct if no gain)
+        full_crystal_abcd_mat = _calc_full_abcd_mat(
+            crystal_length, n0_output, n2_output
+        )
 
         if set_n:
             for s in self.slice:
@@ -560,12 +561,10 @@ class CrystalSlice(Element):
         )
 
     def _propagate_n0n2_lct(self, laser_pulse, calc_gain, nl_kick):
-        # print('prop_type = n0n2_lct')
         nslices_pulse = len(laser_pulse.slice)
         L_cryst = self.length
         n0 = self.n0
         n2 = self.n2
-        # print('n0: %g, n2: %g' %(n0, n2))
         l_scale = self.l_scale
 
         photon_e_ev = laser_pulse.photon_e_ev
@@ -575,7 +574,6 @@ class CrystalSlice(Element):
         phLambda = (
             hc_ev_um / photon_e_ev * 1e-6
         )  # wavelength corresponding to photon_e_ev in meters
-        # print("Wavelength corresponding to %g keV: %g microns" %(photon_e_ev * 1e-3, phLambda / 1e-6))
 
         # calculate components of ABCD matrix corrected with wavelength and scale factor for use in LCT algorithm
         gamma = np.sqrt(n2 / n0)
@@ -584,10 +582,6 @@ class CrystalSlice(Element):
         C = -gamma * np.sin(gamma * L_cryst) / phLambda * (l_scale**2)
         D = np.cos(gamma * L_cryst)
         abcd_mat_cryst = np.array([[A, B], [C, D]])
-        # print('A: %g' %A)
-        # print('B: %g' %B)
-        # print('C: %g' %C)
-        # print('D: %g' %D)
 
         for i in np.arange(nslices_pulse):
             # i = 0
@@ -597,44 +591,26 @@ class CrystalSlice(Element):
             if nl_kick:
                 thisSlice = self.nl_kick(thisSlice)
 
-            # construct 2d numpy complex E_field from pulse wfr object
-            # pol = 6 in calc_int_from_wfr() for full electric
-            # field (0 corresponds to horizontal, 1 corresponds to vertical polarization)
             wfr0 = thisSlice.wfr
-
-            # horizontal component of electric field
-            re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
-                wfr0, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
+            re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(
+                thisSlice.wfr
             )
-            im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
-                wfr0, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
-            )
-            re0_2d_ex = np.array(re0_ex).reshape(
-                (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
-            )
-            im0_2d_ex = np.array(im0_ex).reshape(
-                (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
-            )
-
-            # vertical componenent of electric field
-            re0_ey, re0_mesh_ey = srwutil.calc_int_from_wfr(
-                wfr0, _pol=1, _int_type=5, _det=None, _fname="", _pr=False
-            )
-            im0_ey, im0_mesh_ey = srwutil.calc_int_from_wfr(
-                wfr0, _pol=1, _int_type=6, _det=None, _fname="", _pr=False
-            )
-            re0_2d_ey = np.array(re0_ey).reshape(
-                (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
-            )
-            im0_2d_ey = np.array(im0_ey).reshape(
-                (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
-            )
-
-            Etot0_2d_x = re0_2d_ex + 1j * im0_2d_ex
-            Etot0_2d_y = re0_2d_ey + 1j * im0_2d_ey
 
             xvals_slice = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
             yvals_slice = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
+
+            mesh_old = {
+                "re0_2d_ex": re0_2d_ex,
+                "im0_2d_ex": im0_2d_ex,
+                "re0_2d_ey": re0_2d_ey,
+                "im0_2d_ey": im0_2d_ey,
+            }
+            xvals_slice, yvals_slice, mesh_new = _interp_to_odd(
+                xvals_slice, yvals_slice, mesh_old
+            )
+
+            Etot0_2d_x = mesh_new["re0_2d_ex"] + 1j * mesh_new["im0_2d_ex"]
+            Etot0_2d_y = mesh_new["re0_2d_ey"] + 1j * mesh_new["im0_2d_ey"]
 
             dX = xvals_slice[1] - xvals_slice[0]  # horizontal spacing [m]
             dX_scale = dX / l_scale
@@ -645,6 +621,9 @@ class CrystalSlice(Element):
             in_signal_2d_x = (dX_scale, dY_scale, Etot0_2d_x)
             in_signal_2d_y = (dX_scale, dY_scale, Etot0_2d_y)
 
+            assert np.shape(Etot0_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
+            assert np.shape(Etot0_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
+
             # calculate 2D LCTs
             dX_out, dY_out, out_signal_2d_x = rslct.apply_lct_2d_sep(
                 abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_x
@@ -653,64 +632,73 @@ class CrystalSlice(Element):
                 abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_y
             )
 
+            assert np.shape(out_signal_2d_x) == np.shape(
+                out_signal_2d_y
+            ), "ERROR -- x and y output not equal"
+
+            re_out_signal_2d_x = np.real(out_signal_2d_x)
+            x_total = (np.shape(re_out_signal_2d_x)[0] - 1) * dX_out
+            y_total = (np.shape(re_out_signal_2d_x)[1] - 1) * dY_out
+            xold = np.linspace(
+                -x_total / 2.0, x_total / 2.0, np.shape(re_out_signal_2d_x)[0]
+            )
+            yold = np.linspace(
+                -y_total / 2.0, y_total / 2.0, np.shape(re_out_signal_2d_x)[1]
+            )
+
+            mesh_old_2 = {
+                "re_out_signal_2d_x": np.real(out_signal_2d_x),
+                "im_out_signal_2d_x": np.imag(out_signal_2d_x),
+                "re_out_signal_2d_y": np.real(out_signal_2d_y),
+                "im_out_signal_2d_y": np.imag(out_signal_2d_y),
+            }
+            xnew, ynew, mesh_new = _interp_to_odd(xold, yold, mesh_old_2)
+
+            if (
+                np.shape(re_out_signal_2d_x)[0] % 2 == 0
+                or np.shape(re_out_signal_2d_x)[1] % 2 == 0
+            ):
+                dX_out = np.mean(np.diff(xnew))
+                dY_out = np.mean(np.diff(ynew))
+
+            out_signal_2d_x = (
+                mesh_new["re_out_signal_2d_x"] + 1j * mesh_new["im_out_signal_2d_x"]
+            )
+            out_signal_2d_y = (
+                mesh_new["re_out_signal_2d_y"] + 1j * mesh_new["im_out_signal_2d_y"]
+            )
+
             # extract propagated complex field and calculate corresponding x and y mesh arrays
             # we assume same mesh for both components of E_field
             hx = dX_out * l_scale
             hy = dY_out * l_scale
-            # sig_arr_x = out_signal_2d_x
-            # sig_arr_y = out_signal_2d_y
             ny, nx = np.shape(out_signal_2d_x)
             local_xv = rslct.lct_abscissae(nx, hx)
             local_yv = rslct.lct_abscissae(ny, hy)
-            x_min = np.min(local_xv)
-            x_max = np.max(local_xv)
-            y_min = np.min(local_xv)
-            y_max = np.max(local_xv)
 
             # return to SRW wavefront form
-            ex_real = np.real(out_signal_2d_x).flatten(order="C")
-            ex_imag = np.imag(out_signal_2d_x).flatten(order="C")
+            re_ex = np.real(out_signal_2d_x)
+            im_ex = np.imag(out_signal_2d_x)
+            re_ey = np.real(out_signal_2d_y)
+            im_ey = np.imag(out_signal_2d_y)
 
-            ey_real = np.real(out_signal_2d_y).flatten(order="C")
-            ey_imag = np.imag(out_signal_2d_y).flatten(order="C")
+            x = np.linspace(np.min(local_xv), np.max(local_xv), nx)
+            y = np.linspace(np.min(local_xv), np.max(local_xv), ny)
 
-            ex_numpy = np.zeros(2 * len(ex_real))
-            for i in range(len(ex_real)):
-                ex_numpy[2 * i] = ex_real[i]
-                ex_numpy[2 * i + 1] = ex_imag[i]
-
-            ey_numpy = np.zeros(2 * len(ey_real))
-            for i in range(len(ey_real)):
-                ey_numpy[2 * i] = ey_real[i]
-                ey_numpy[2 * i + 1] = ey_imag[i]
-
-            ex = array.array("f", ex_numpy.tolist())
-            ey = array.array("f", ey_numpy.tolist())
-
-            wfr1 = srwlib.SRWLWfr(
-                _arEx=ex,
-                _arEy=ey,
-                _typeE="f",
-                _eStart=photon_e_ev,
-                _eFin=photon_e_ev,
-                _ne=1,
-                _xStart=x_min,
-                _xFin=x_max,
-                _nx=nx,
-                _yStart=y_min,
-                _yFin=y_max,
-                _ny=ny,
-                _zStart=0.0,
-                _partBeam=None,
+            # remake the wavefront
+            thisSlice.wfr = srwutil.make_wavefront(
+                re_ex,
+                im_ex,
+                re_ey,
+                im_ey,
+                thisSlice.photon_e_ev,
+                x,
+                y,
             )
 
-            thisSlice.wfr = wfr1
-
-        # return wfr1
         return laser_pulse
 
     def _propagate_abcd_lct(self, laser_pulse, calc_gain, nl_kick):
-        # print('prop_type = abcd_lct')
         nslices_pulse = len(laser_pulse.slice)
         l_scale = self.l_scale
 
@@ -721,7 +709,6 @@ class CrystalSlice(Element):
         phLambda = (
             hc_ev_um / photon_e_ev * 1e-6
         )  # wavelength corresponding to photon_e_ev in meters
-        # print("Wavelength corresponding to %g keV: %g microns" %(photon_e_ev * 1e-3, phLambda / 1e-6))
 
         # rescale ABCD matrix with wavelength and scale factor for use in LCT algorithm
         A = self.A
@@ -729,57 +716,36 @@ class CrystalSlice(Element):
         C = self.C / phLambda * (l_scale**2)
         D = self.D
         abcd_mat_cryst = np.array([[A, B], [C, D]])
-        # print('A: %g' %A)
-        # print('B: %g' %B)
-        # print('C: %g' %C)
-        # print('D: %g' %D)
 
         for i in np.arange(nslices_pulse):
             # i = 0
             thisSlice = laser_pulse.slice[i]
+
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
             if nl_kick:
                 thisSlice = self.nl_kick(thisSlice)
 
-            # construct 2d numpy complex E_field from pulse wfr object
-            # pol = 6 in calc_int_from_wfr() for full electric
-            # field (0 corresponds to horizontal, 1 corresponds to vertical polarization)
             wfr0 = thisSlice.wfr
-
-            # horizontal component of electric field
-            re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
-                wfr0, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
+            re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(
+                thisSlice.wfr
             )
-            im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
-                wfr0, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
-            )
-            re0_2d_ex = np.array(re0_ex).reshape(
-                (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
-            )
-            im0_2d_ex = np.array(im0_ex).reshape(
-                (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
-            )
-
-            # vertical componenent of electric field
-            re0_ey, re0_mesh_ey = srwutil.calc_int_from_wfr(
-                wfr0, _pol=1, _int_type=5, _det=None, _fname="", _pr=False
-            )
-            im0_ey, im0_mesh_ey = srwutil.calc_int_from_wfr(
-                wfr0, _pol=1, _int_type=6, _det=None, _fname="", _pr=False
-            )
-            re0_2d_ey = np.array(re0_ey).reshape(
-                (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
-            )
-            im0_2d_ey = np.array(im0_ey).reshape(
-                (wfr0.mesh.nx, wfr0.mesh.ny), order="C"
-            )
-
-            Etot0_2d_x = re0_2d_ex + 1j * im0_2d_ex
-            Etot0_2d_y = re0_2d_ey + 1j * im0_2d_ey
 
             xvals_slice = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
             yvals_slice = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
+
+            mesh_old = {
+                "re0_2d_ex": re0_2d_ex,
+                "im0_2d_ex": im0_2d_ex,
+                "re0_2d_ey": re0_2d_ey,
+                "im0_2d_ey": im0_2d_ey,
+            }
+            xvals_slice, yvals_slice, mesh_new = _interp_to_odd(
+                xvals_slice, yvals_slice, mesh_old
+            )
+
+            Etot0_2d_x = mesh_new["re0_2d_ex"] + 1j * mesh_new["im0_2d_ex"]
+            Etot0_2d_y = mesh_new["re0_2d_ey"] + 1j * mesh_new["im0_2d_ey"]
 
             dX = xvals_slice[1] - xvals_slice[0]  # horizontal spacing [m]
             dX_scale = dX / l_scale
@@ -790,6 +756,9 @@ class CrystalSlice(Element):
             in_signal_2d_x = (dX_scale, dY_scale, Etot0_2d_x)
             in_signal_2d_y = (dX_scale, dY_scale, Etot0_2d_y)
 
+            assert np.shape(Etot0_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
+            assert np.shape(Etot0_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
+
             # calculate 2D LCTs
             dX_out, dY_out, out_signal_2d_x = rslct.apply_lct_2d_sep(
                 abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_x
@@ -798,60 +767,74 @@ class CrystalSlice(Element):
                 abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_y
             )
 
+            assert np.shape(out_signal_2d_x) == np.shape(
+                out_signal_2d_y
+            ), "ERROR -- x and y output not equal"
+
+            re_out_signal_2d_x = np.real(out_signal_2d_x)
+            x_total = (np.shape(re_out_signal_2d_x)[0] - 1) * dX_out
+            y_total = (np.shape(re_out_signal_2d_x)[1] - 1) * dY_out
+            xold = np.linspace(
+                -x_total / 2.0, x_total / 2.0, np.shape(re_out_signal_2d_x)[0]
+            )
+            yold = np.linspace(
+                -y_total / 2.0, y_total / 2.0, np.shape(re_out_signal_2d_x)[1]
+            )
+
+            mesh_old_2 = {
+                "re_out_signal_2d_x": np.real(out_signal_2d_x),
+                "im_out_signal_2d_x": np.imag(out_signal_2d_x),
+                "re_out_signal_2d_y": np.real(out_signal_2d_y),
+                "im_out_signal_2d_y": np.imag(out_signal_2d_y),
+            }
+            xnew, ynew, mesh_new = _interp_to_odd(xold, yold, mesh_old_2)
+
+            if (
+                np.shape(re_out_signal_2d_x)[0] % 2 == 0
+                or np.shape(re_out_signal_2d_x)[1] % 2 == 0
+            ):
+                dX_out = np.mean(np.diff(xnew))
+                dY_out = np.mean(np.diff(ynew))
+
+            out_signal_2d_x = (
+                mesh_new["re_out_signal_2d_x"] + 1j * mesh_new["im_out_signal_2d_x"]
+            )
+            out_signal_2d_y = (
+                mesh_new["re_out_signal_2d_y"] + 1j * mesh_new["im_out_signal_2d_y"]
+            )
+
             # extract propagated complex field and calculate corresponding x and y mesh arrays
             # we assume same mesh for both components of E_field
             hx = dX_out * l_scale
             hy = dY_out * l_scale
-            # sig_arr_x = out_signal_2d_x
-            # sig_arr_y = out_signal_2d_y
             ny, nx = np.shape(out_signal_2d_x)
+
+            assert np.shape(out_signal_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
+            assert np.shape(out_signal_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
+
             local_xv = rslct.lct_abscissae(nx, hx)
             local_yv = rslct.lct_abscissae(ny, hy)
-            x_min = np.min(local_xv)
-            x_max = np.max(local_xv)
-            y_min = np.min(local_xv)
-            y_max = np.max(local_xv)
 
             # return to SRW wavefront form
-            ex_real = np.real(out_signal_2d_x).flatten(order="C")
-            ex_imag = np.imag(out_signal_2d_x).flatten(order="C")
+            re_ex = np.real(out_signal_2d_x)
+            im_ex = np.imag(out_signal_2d_x)
+            re_ey = np.real(out_signal_2d_y)
+            im_ey = np.imag(out_signal_2d_y)
 
-            ey_real = np.real(out_signal_2d_y).flatten(order="C")
-            ey_imag = np.imag(out_signal_2d_y).flatten(order="C")
+            x = np.linspace(np.min(local_xv), np.max(local_xv), nx)
+            y = np.linspace(np.min(local_xv), np.max(local_xv), ny)
 
-            ex_numpy = np.zeros(2 * len(ex_real))
-            for i in range(len(ex_real)):
-                ex_numpy[2 * i] = ex_real[i]
-                ex_numpy[2 * i + 1] = ex_imag[i]
-
-            ey_numpy = np.zeros(2 * len(ey_real))
-            for i in range(len(ey_real)):
-                ey_numpy[2 * i] = ey_real[i]
-                ey_numpy[2 * i + 1] = ey_imag[i]
-
-            ex = array.array("f", ex_numpy.tolist())
-            ey = array.array("f", ey_numpy.tolist())
-
-            wfr1 = srwlib.SRWLWfr(
-                _arEx=ex,
-                _arEy=ey,
-                _typeE="f",
-                _eStart=photon_e_ev,
-                _eFin=photon_e_ev,
-                _ne=1,
-                _xStart=x_min,
-                _xFin=x_max,
-                _nx=nx,
-                _yStart=y_min,
-                _yFin=y_max,
-                _ny=ny,
-                _zStart=0.0,
-                _partBeam=None,
+            # remake the wavefront
+            thisSlice.wfr = srwutil.make_wavefront(
+                re_ex,
+                im_ex,
+                re_ey,
+                im_ey,
+                thisSlice.photon_e_ev,
+                x,
+                y,
             )
 
-            thisSlice.wfr = wfr1
-
-        # return wfr1
         return laser_pulse
 
     def _propagate_n0n2_srw(self, laser_pulse, calc_gain, nl_kick):
@@ -859,7 +842,6 @@ class CrystalSlice(Element):
         L_cryst = self.length
         n0 = self.n0
         n2 = self.n2
-        # print('n0: %g, n2: %g' %(n0, n2))
 
         for i in np.arange(nslices):
             thisSlice = laser_pulse.slice[i]
@@ -867,20 +849,14 @@ class CrystalSlice(Element):
                 thisSlice = self.calc_gain(thisSlice)
             if nl_kick:
                 thisSlice = self.nl_kick(thisSlice)
-            # print(type(thisSlice))
+
             if n2 == 0:
-                # print('n2 = 0')
-                # A = 1.0
-                # B = L_cryst
-                # C = 0.0
-                # D = 1.0
                 optDrift = srwlib.SRWLOptD(L_cryst / n0)
                 propagParDrift = [0, 0, 1.0, 0, 0, 1.0, 1.0, 1.0, 1.0, 0, 0, 0]
                 # propagParDrift = [0, 0, 1., 0, 0, 1.1, 1.2, 1.1, 1.2, 0, 0, 0]
                 optBL = srwlib.SRWLOptC([optDrift], [propagParDrift])
-                # print("L_cryst/n0=",L_cryst/n0)
+
             else:
-                # print('n2 .ne. 0')
                 gamma = np.sqrt(n2 / n0)
                 A = np.cos(gamma * L_cryst)
                 B = (1 / gamma) * np.sin(gamma * L_cryst)
@@ -1059,61 +1035,48 @@ class CrystalSlice(Element):
         # Update the number of photons
         thisSlice.n_photons_2d.mesh *= energy_gain
 
-        # Update the wavefront itself: (KW To Do: make this a separate method?)
-        #    First extract the electric fields
-
-        # horizontal component of electric field
-        re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
-            lp_wfr, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
-        )
-        im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
-            lp_wfr, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
-        )
-        gain_re0_ex = np.float64(re0_ex) * np.sqrt(energy_gain).flatten(order="C")
-        gain_im0_ex = np.float64(im0_ex) * np.sqrt(energy_gain).flatten(order="C")
-
-        # vertical componenent of electric field
-        re0_ey, re0_mesh_ey = srwutil.calc_int_from_wfr(
-            lp_wfr, _pol=1, _int_type=5, _det=None, _fname="", _pr=False
-        )
-        im0_ey, im0_mesh_ey = srwutil.calc_int_from_wfr(
-            lp_wfr, _pol=1, _int_type=6, _det=None, _fname="", _pr=False
-        )
-        gain_re0_ey = np.float64(re0_ey) * np.sqrt(energy_gain).flatten(order="C")
-        gain_im0_ey = np.float64(im0_ey) * np.sqrt(energy_gain).flatten(order="C")
-
-        ex_numpy = np.zeros(2 * len(gain_re0_ex))
-        for i in range(len(gain_re0_ex)):
-            ex_numpy[2 * i] = gain_re0_ex[i]
-            ex_numpy[2 * i + 1] = gain_im0_ex[i]
-
-        ey_numpy = np.zeros(2 * len(gain_re0_ey))
-        for i in range(len(gain_re0_ey)):
-            ey_numpy[2 * i] = gain_re0_ey[i]
-            ey_numpy[2 * i + 1] = gain_im0_ey[i]
-
-        ex = array.array("f", ex_numpy.tolist())
-        ey = array.array("f", ey_numpy.tolist())
-
-        #    Pass changes to SRW
-        wfr1 = srwlib.SRWLWfr(
-            _arEx=ex,
-            _arEy=ey,
-            _typeE="f",
-            _eStart=thisSlice.photon_e_ev,
-            _eFin=thisSlice.photon_e_ev,
-            _ne=1,
-            _xStart=lp_wfr.mesh.xStart,
-            _xFin=lp_wfr.mesh.xFin,
-            _nx=lp_wfr.mesh.nx,
-            _yStart=lp_wfr.mesh.yStart,
-            _yFin=lp_wfr.mesh.yFin,
-            _ny=lp_wfr.mesh.ny,
-            _zStart=0.0,
-            _partBeam=None,
+        # Update the wavefront itself
+        intensity_2d = srwutil.calc_int_from_elec(lp_wfr)
+        phase_1d = srwlib.array("d", [0] * lp_wfr.mesh.nx * lp_wfr.mesh.ny)
+        srwl.CalcIntFromElecField(phase_1d, lp_wfr, 0, 4, 3, lp_wfr.mesh.eStart, 0, 0)
+        phase_2d = (
+            np.array(phase_1d)
+            .reshape((lp_wfr.mesh.nx, lp_wfr.mesh.ny), order="C")
+            .astype(np.float64)
         )
 
-        thisSlice.wfr = wfr1
+        gain_intensity = intensity_2d * energy_gain
+        gain_phase = phase_2d
+
+        gain_e_norm = np.sqrt(2.0 * gain_intensity / (const.c * const.epsilon_0))
+        gain_re0_ex = np.multiply(gain_e_norm, np.cos(gain_phase))
+        gain_im0_ex = np.multiply(gain_e_norm, np.sin(gain_phase))
+        gain_re0_ey = np.zeros(np.shape(gain_re0_ex))
+        gain_im0_ey = np.zeros(np.shape(gain_im0_ex))
+
+        """
+        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(thisSlice.wfr)
+
+        gain_re0_ex = re0_2d_ex* np.sqrt(energy_gain)
+        gain_im0_ex = im0_2d_ex* np.sqrt(energy_gain)
+        gain_re0_ey = re0_2d_ey* np.sqrt(energy_gain)
+        gain_im0_ey = im0_2d_ey* np.sqrt(energy_gain)
+        """
+
+        x = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx)
+        y = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny)
+
+        # remake the wavefront
+        thisSlice.wfr = srwutil.make_wavefront(
+            gain_re0_ex,
+            gain_im0_ex,
+            gain_re0_ey,
+            gain_im0_ey,
+            thisSlice.photon_e_ev,
+            x,
+            y,
+        )
+
         return thisSlice
 
     def nl_kick(self, thisSlice):
@@ -1139,27 +1102,9 @@ class CrystalSlice(Element):
 
         # create nonlinear kick array
         nl_kick_array = np.exp(np.multiply(np.multiply(delta_n_interp, 1j), l_over_lam))
+
         wfr0 = thisSlice.wfr
-
-        # horizontal component of electric field
-        re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
-            wfr0, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
-        )
-        im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
-            wfr0, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
-        )
-        re0_2d_ex = np.array(re0_ex).reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
-        im0_2d_ex = np.array(im0_ex).reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
-
-        # vertical componenent of electric field
-        re0_ey, re0_mesh_ey = srwutil.calc_int_from_wfr(
-            wfr0, _pol=1, _int_type=5, _det=None, _fname="", _pr=False
-        )
-        im0_ey, im0_mesh_ey = srwutil.calc_int_from_wfr(
-            wfr0, _pol=1, _int_type=6, _det=None, _fname="", _pr=False
-        )
-        re0_2d_ey = np.array(re0_ey).reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
-        im0_2d_ey = np.array(im0_ey).reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
+        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(wfr0)
 
         Etot0_2d_x = re0_2d_ex + 1j * im0_2d_ex
         Etot0_2d_y = re0_2d_ey + 1j * im0_2d_ey
@@ -1175,37 +1120,19 @@ class CrystalSlice(Element):
         ey_real = np.real(Etot0_2d_y_nl_kick).flatten(order="C")
         ey_imag = np.imag(Etot0_2d_y_nl_kick).flatten(order="C")
 
-        ex_numpy = np.zeros(2 * len(ex_real))
-        for i in range(len(ex_real)):
-            ex_numpy[2 * i] = ex_real[i]
-            ex_numpy[2 * i + 1] = ex_imag[i]
+        x = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx)
+        y = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny)
 
-        ey_numpy = np.zeros(2 * len(ey_real))
-        for i in range(len(ey_real)):
-            ey_numpy[2 * i] = ey_real[i]
-            ey_numpy[2 * i + 1] = ey_imag[i]
-
-        ex = array.array("f", ex_numpy.tolist())
-        ey = array.array("f", ey_numpy.tolist())
-
-        wfr1 = srwlib.SRWLWfr(
-            _arEx=ex,
-            _arEy=ey,
-            _typeE="f",
-            _eStart=thisSlice.photon_e_ev,
-            _eFin=thisSlice.photon_e_ev,
-            _ne=1,
-            _xStart=lp_wfr.mesh.xStart,
-            _xFin=lp_wfr.mesh.xFin,
-            _nx=lp_wfr.mesh.nx,
-            _yStart=lp_wfr.mesh.yStart,
-            _yFin=lp_wfr.mesh.yFin,
-            _ny=lp_wfr.mesh.ny,
-            _zStart=0.0,
-            _partBeam=None,
+        # remake the wavefront
+        thisSlice.wfr = srwutil.make_wavefront(
+            ex_real,
+            ex_imag,
+            ey_real,
+            ey_imag,
+            thisSlice.photon_e_ev,
+            x,
+            y,
         )
-
-        thisSlice.wfr = wfr1
 
         return thisSlice
 
@@ -1446,7 +1373,7 @@ def _calc_full_abcd_mat(crystal_length, n0_vals, n2_vals):
     for j in range(num_long_slices):
         # extract gamma_vals
         gamma_vals[j] = np.sqrt(n2_vals[j] / n0_vals[j])
-        gamma_z = gamma_vals[j] * (crystal_length / num_long_slices)
+        gamma_z = gamma_vals[j] * (crystal_length / 1.0e2 / num_long_slices)
 
         # calculate ABCD matrices for each crystal slice
         abcd_mats[j, 0, 0] = np.cos(gamma_z)
@@ -1464,3 +1391,28 @@ def _calc_full_abcd_mat(crystal_length, n0_vals, n2_vals):
         )
 
     return abcd_mat_tot_full
+
+
+def _interp_to_odd(x_old, y_old, mesh_old):
+
+    nx, ny = len(x_old), len(y_old)
+    if nx % 2 == 0:
+        x_new = np.linspace(np.min(x_old), np.max(x_old), nx + 1)
+    else:
+        x_new = np.copy(x_old)
+    if ny % 2 == 0:
+        y_new = np.linspace(np.min(y_old), np.max(y_old), ny + 1)
+    else:
+        y_new = np.copy(y_old)
+
+    if nx % 2 == 0 or ny % 2 == 0:
+        mesh_new = {}
+        for mesh in mesh_old:
+            pre_interp = mesh_old["{}".format(mesh)]
+            rect_biv_spline = RectBivariateSpline(x_old, y_old, pre_interp)
+            post_interp = rect_biv_spline(x_new, y_new)
+            mesh_new["{}".format(mesh)] = post_interp
+    else:
+        mesh_new = copy.deepcopy(mesh_old)
+
+    return x_new, y_new, mesh_new
