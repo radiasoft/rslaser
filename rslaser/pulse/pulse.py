@@ -41,7 +41,6 @@ _LASER_PULSE_DEFAULTS = PKDict(
     sigy_waist=1.0e-3,
     num_sig_trans=6,
     nx_slice=64,
-    ny_slice=64,
     poltype=1,
     mx=0,
     my=0,
@@ -93,7 +92,6 @@ class LaserPulse(ValidatorBase):
                 sigx_waist (float): horizontal RMS waist size [m]
                 sigy_waist (float): vertical RMS waist size [m]
                 nx_slice (int): no. of horizontal mesh points in slice
-                ny_slice (int): no. of vertical mesh points in slice
                 num_sig_trans (int): no. of sigmas for transverse Gsn range
                 pulseE (float): maximum pulse energy for SRW Gaussian wavefronts [J]
                 poltype (int): polarization 1- lin. hor., 2- lin. vert., 3- lin. 45 deg., 4- lin.135 deg., 5- circ. right, 6- circ. left
@@ -625,7 +623,6 @@ class LaserPulseSlice(ValidatorBase):
         # self.z_waist = params.z_waist
         self.nslice = params.nslice
         self.nx_slice = params.nx_slice
-        self.ny_slice = params.ny_slice
         self.dist_waist = params.dist_waist
 
         #  (Note KW: called this pulseE_slice because right now LPS is also passed pulseE for the whole pulse)
@@ -813,7 +810,7 @@ class LaserPulseSlice(ValidatorBase):
             sliceEnInt,
             params.poltype,
             self.nx_slice,
-            self.ny_slice,
+            self.nx_slice,
             self.photon_e_ev,
             params.mx,
             params.my,
