@@ -644,9 +644,14 @@ class LaserPulseSlice(ValidatorBase):
             -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
         )
 
-        chirp = np.sqrt((params.tau_fwhm / params.tau_0) ** 2.0 - 1.0)
-        # omega_chirp = omega_0 * (1 + b * (t - z/c)), b=chirp and t=0
-        lambda_chirp = self._lambda0 / (1 - (chirp * -self._pulse_pos) / const.c)
+        omega_0 = (2.0 * np.pi * const.c) / self._lambda0
+        chirp = np.sqrt(
+            (params.tau_fwhm / params.tau_0) ** 2.0 - 1.0
+        )  # tau_fwhm = tau_c
+        omega_chirp = omega_0 + (
+            (chirp * (self._pulse_pos / const.c)) / params.tau_fwhm**2.0
+        )
+        lambda_chirp = (2.0 * np.pi * const.c) / omega_chirp
         self.photon_e_ev = units.calculate_phE_from_lambda0(lambda_chirp) / const.e
 
         constConvRad = 1.23984186e-06 / (
