@@ -31,11 +31,13 @@ import matplotlib.pyplot as plt
 _LASER_PULSE_DEFAULTS = PKDict(
     nslice=3,
     pulse_direction=0.0,  # 0 corresponds to 'right' or 'z' or 'forward', can be set to any angle relative
-    chirp=0,
     photon_e_ev=1.5,  # 1e3,
     num_sig_long=3.0,
     dist_waist=0,
-    tau_fwhm=0.1 / const.c / math.sqrt(2.0),
+    tau_fwhm=0.1 / const.c / math.sqrt(2.0),  # also tau_c: the chirped pulse length
+    tau_0=0.1
+    / const.c
+    / math.sqrt(2.0),  # the Fourier-limited pulse length of a given spectral bandwidth
     pulseE=0.001,
     sigx_waist=1.0e-3,
     sigy_waist=1.0e-3,
@@ -46,6 +48,7 @@ _LASER_PULSE_DEFAULTS = PKDict(
     my=0,
     phase_flatten_cutoff=0.85,
 )
+
 _ENVELOPE_DEFAULTS = PKDict(
     w0=0.1,
     a0=0.01,
@@ -132,8 +135,10 @@ class LaserPulse(ValidatorBase):
             units.calculate_lambda0_from_phE(params.photon_e_ev * const.e)
         )  # Function requires energy in J
         self.pulseE = params.pulseE
-        # self.photon_e -= 0.5*params.chirp           # so central slice has the central photon energy
-        # _de = params.chirp / self.nslice   # photon energy shift from slice to slice
+
+        # positive chirp parameter, b, where b^2 = (tau_c / tau_0)^2 - 1
+        self.initial_chirp = np.sqrt((params.tau_fwhm / params.tau_0) ** 2.0 - 1.0)
+
         for i in range(params.nslice):
             # add the slices; each (slowly) instantiates an SRW wavefront object
             self.slice.append(LaserPulseSlice(i, params.copy(), files=self.files))
@@ -625,22 +630,25 @@ class LaserPulseSlice(ValidatorBase):
         self.nx_slice = params.nx_slice
         self.dist_waist = params.dist_waist
 
-        #  (Note KW: called this pulseE_slice because right now LPS is also passed pulseE for the whole pulse)
         self.pulseE_slice = (
             params.pulseE / self.nslice
         )  # currently assumes consistent length and energy across all slices
 
-        # compute slice photon energy from central energy, chirp, and slice index
-        self.photon_e_ev = (
-            params.photon_e_ev
-        )  # check that this is being properly incremented in the correct place (see LaserPulse class)
-        _de = params.chirp / self.nslice  # photon energy shift from slice to slice
-        self.photon_e_ev -= 0.5 * params.chirp + (
-            self.nslice * _de
-        )  # so central slice has the central photon energy
-
         self.sig_s = params.tau_fwhm * const.c / 2.355
         self.num_sig_long = params.num_sig_long
+        self.ds = (
+            2 * params.num_sig_long * self.sig_s / params.nslice
+        )  # longitudinal spacing between slices
+        # self._pulse_pos = self.dist_waist - params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
+        self._pulse_pos = (
+            -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
+        )
+
+        chirp = np.sqrt((params.tau_fwhm / params.tau_0) ** 2.0 - 1.0)
+        # omega_chirp = omega_0 * (1 + b * (t - z/c)), b=chirp and t=0
+        lambda_chirp = self._lambda0 / (1 - (chirp * -self._pulse_pos) / const.c)
+        self.photon_e_ev = units.calculate_phE_from_lambda0(lambda_chirp) / const.e
+
         constConvRad = 1.23984186e-06 / (
             4 * 3.1415926536
         )  ##conversion from energy to 1/wavelength
@@ -652,16 +660,6 @@ class LaserPulseSlice(ValidatorBase):
         sigrL_x = math.sqrt(self.sigx_waist**2 + (self.dist_waist * rmsAngDiv_x) ** 2)
         sigrL_y = math.sqrt(self.sigy_waist**2 + (self.dist_waist * rmsAngDiv_y) ** 2)
 
-        # *************begin function below**********
-
-        # sig_s = params.tau_fwhm * const.c / 2.355
-        self.ds = (
-            2 * params.num_sig_long * self.sig_s / params.nslice
-        )  # longitudinal spacing between slices
-        # self._pulse_pos = self.dist_waist - params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
-        self._pulse_pos = (
-            -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
-        )
         self._wavefront(params, files)
 
         # Calculate the initial number of photons in 2d grid of each slice from pulseE_slice
