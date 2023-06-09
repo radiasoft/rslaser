@@ -206,6 +206,11 @@ class Crystal(Element):
     def calc_n0n2(
         self, method="fenics", set_n=False, initial_temp=0.0, mesh_density=80
     ):
+
+        assert (method == "fenics") or (
+            method == "analytical"
+        ), "ERROR -- Invalid method passed to function"
+
         # initial_temp [degC],
         # mesh_density [int]: value ≥ 120 will produce more accurate results; slower, but closer to numerical conversion
 
