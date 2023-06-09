@@ -136,6 +136,9 @@ class LaserPulse(ValidatorBase):
         )  # Function requires energy in J
         self.pulseE = params.pulseE
 
+        assert (
+            params.tau_fwhm >= params.tau_0
+        ), "ERROR -- Invalid pulse length parameters provided"
         # positive chirp parameter, b, where b^2 = (tau_c / tau_0)^2 - 1
         self.initial_chirp = np.sqrt((params.tau_fwhm / params.tau_0) ** 2.0 - 1.0)
 
