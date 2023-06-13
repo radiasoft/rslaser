@@ -29,6 +29,10 @@ def test_sirepo_compatability():
     # If this test fails, then alert software team
     # indicates rslaser interface is not compatable with
     # sirepo silas
+
+    # TODO (gurhar1133): we need more than just pulse instantiation
+    # need elements and ability to propagate. Get from a parameters.py
+    # that covers all of these parts
     try:
         p = pulse.LaserPulse(
             params=PKDict(
