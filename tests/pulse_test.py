@@ -25,6 +25,36 @@ def pulse_instantiation_test(pulse, field):
             )
 
 
+def test_sirepo_compatability():
+    # If this test fails, then alert software team
+    # indicates rslaser interface is not compatable with
+    # sirepo silas
+    try:
+        p = pulse.LaserPulse(
+            params=PKDict(
+                nslice=3,
+                num_sig_long=3,
+                num_sig_trans=6,
+                nx_slice=64,
+                photon_e_ev=1.5,
+                poltype=1,
+                pulseE=0.001,
+                sigx_waist=0.001,
+                sigy_waist=0.001,
+                tau_fwhm=2.35865e-11,
+                tau_0=2.35865e-11,
+            ),
+        )
+    except Exception:
+        raise AssertionError(
+            """
+    If this test fails, then alert software team
+    indicates rslaser interface is not compatable with
+    sirepo silas
+        """
+        )
+
+
 def test_instantiation():
     pulse.LaserPulse()
     p = pulse._LASER_PULSE_DEFAULTS.copy()
