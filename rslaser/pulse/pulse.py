@@ -37,7 +37,7 @@ _LASER_PULSE_DEFAULTS = PKDict(
     tau_fwhm=0.1 / const.c / math.sqrt(2.0),  # also tau_c: the chirped pulse length
     tau_0=0.1
     / const.c
-    / math.sqrt(2.0),  # the Fourier-limited pulse length of a given spectral bandwidth
+    / math.sqrt(2.0),  # Fourier-limited pulse length of a given spectral bandwidth
     pulseE=0.001,
     sigx_waist=1.0e-3,
     sigy_waist=1.0e-3,
@@ -526,24 +526,8 @@ class LaserPulse(ValidatorBase):
         for laser_index_i in np.arange(self.nslice):
             thisSlice = self.slice[laser_index_i]
 
-            # Extract horizontal component of electric field
-            re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
-                thisSlice.wfr, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
-            )
-            im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
-                thisSlice.wfr, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
-            )
-
-            # Reshape arrays from 1d to 2d
-            re_ex_2d = (
-                np.array(re0_ex)
-                .reshape((thisSlice.wfr.mesh.nx, thisSlice.wfr.mesh.ny), order="C")
-                .astype(np.float64)
-            )
-            im_ex_2d = (
-                np.array(im0_ex)
-                .reshape((thisSlice.wfr.mesh.nx, thisSlice.wfr.mesh.ny), order="C")
-                .astype(np.float64)
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
+                thisSlice.wfr
             )
 
             new_re_ex_2d = np.sqrt(re_ex_2d**2.0 + im_ex_2d**2.0)
