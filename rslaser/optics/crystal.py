@@ -351,6 +351,7 @@ class CrystalSlice(Element):
         self.C = params.C
         self.D = params.D
         self.radial_n2_factor = params.radial_n2_factor
+        self.prop_type = "srw"  # Default prop_type for element.py propagation
 
         # Wavelength-dependent cross-section (P. F. Moulton, 1986)
         wavelength = np.array(

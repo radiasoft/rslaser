@@ -13,7 +13,12 @@ class ElementException(Exception):
 
 
 class Element(ValidatorBase):
-    def propagate(self, laser_pulse):
+    def propagate(self, laser_pulse, prop_type="default"):
+
+        if prop_type != "default":
+            raise ElementException(
+                f'Non default prop_type "{prop_type}" passed to propagation'
+            )
 
         if self.prop_type == "srw":
             if not hasattr(self, "_srwc"):
@@ -22,10 +27,6 @@ class Element(ValidatorBase):
                 srwl.PropagElecField(w.wfr, self._srwc)
         elif self.prop_type == "lct":
             laser_pulse = _prop_abcd_lct(laser_pulse, self.abcd_matrix, self.l_scale)
-        else:
-            raise ElementException(
-                f'Non default prop_type "{self.prop_type}" passed to propagation'
-            )
 
         return laser_pulse
 
