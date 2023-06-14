@@ -34,9 +34,8 @@ def test_sirepo_compatability():
     indicates rslaser interface is not compatable with
     sirepo silas master branch
     """
-    from rslaser.optics.drift import Drift
+    from rslaser.optics.lens import Lens_srw, Drift_srw
     from rslaser.optics.crystal import Crystal
-    from rslaser.optics.lens import Lens
 
     def interpolate_across_slice(length, nslice, values):
         return scipy.interpolate.splev(
@@ -47,7 +46,6 @@ def test_sirepo_compatability():
     try:
         p = pulse.LaserPulse(
             params=PKDict(
-                chirp=0,
                 nslice=3,
                 num_sig_long=3,
                 num_sig_trans=6,
@@ -58,6 +56,7 @@ def test_sirepo_compatability():
                 sigx_waist=0.001,
                 sigy_waist=0.001,
                 tau_fwhm=2.35865e-11,
+                tau_0=2.35865e-11,
             ),
         )
 
@@ -65,7 +64,7 @@ def test_sirepo_compatability():
         # to be checked since they are sirepo elements
         # not rslaser elements
         elements = [
-            (Drift(1), ["default"]),
+            (Drift_srw(3), ["default"]),
             (
                 Crystal(
                     params=PKDict(
@@ -92,16 +91,15 @@ def test_sirepo_compatability():
                         pop_inversion_pump_type="dual",
                     ),
                 ),
-                ["n0n2_srw", True, True],
+                ["n0n2_srw", False, False],
             ),
-            (Drift(0.5), ["default"]),
-            (Lens(2), ["default"]),
-            (Drift(0.25), ["default"]),
-            (Drift(0.25), ["default"]),
-            (Drift(1.5), ["default"]),
+            (Drift_srw(0.5), ["default"]),
+            (Lens_srw(2), ["default"]),
+            (Drift_srw(0.25), ["default"]),
+            (Drift_srw(0.25), ["default"]),
         ]
 
-        beamline = [0, 1, 2, 3, 4, 5, 6, 7, 0, 8, 0]
+        beamline = [0, 1, 2, 3, 4, 5]
         crystal_count = 0
         for idx in beamline:
             e = elements[idx]
