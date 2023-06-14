@@ -128,24 +128,24 @@ def test_prop_with_gain():
 
 
 def test_instantiation03():
-    drift.Drift(0.01)
+    lens.Drift_srw(0.01)
 
 
 def test_propagation05():
-    d = drift.Drift(0.01)
+    d = lens.Drift_srw(0.01)
     p = pulse.LaserPulse()
     d.propagate(p)
-    trigger_prop_fail(drift.Drift(0.01).propagate, pulse.LaserPulse())
+    trigger_prop_fail(lens.Drift_srw(0.01).propagate, pulse.LaserPulse())
 
 
 def test_instantiation04():
-    lens.Lens(0.2)
+    lens.Lens_srw(0.2)
 
 
 def test_propagation06():
-    l = lens.Lens(0.2)
+    l = lens.Lens_srw(0.2)
     l.propagate(pulse.LaserPulse())
-    trigger_prop_fail(lens.Lens(0.01).propagate, pulse.LaserPulse())
+    trigger_prop_fail(lens.Lens_srw(0.01).propagate, pulse.LaserPulse())
 
 
 def trigger_prop_fail(prop_func, pulse):
