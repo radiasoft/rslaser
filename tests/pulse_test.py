@@ -26,16 +26,28 @@ def pulse_instantiation_test(pulse, field):
 
 
 def test_sirepo_compatability():
-    # If this test fails, then alert software team
-    # indicates rslaser interface is not compatable with
-    # sirepo silas
+    """
+    Test of compatability between rslaser and sirepo silas master branch
 
-    # TODO (gurhar1133): we need more than just pulse instantiation
-    # need elements and ability to propagate. Get from a parameters.py
-    # that covers all of these parts
+    NOTE:
+        If this test fails, then alert software team
+    indicates rslaser interface is not compatable with
+    sirepo silas master branch
+    """
+    from rslaser.optics.drift import Drift
+    from rslaser.optics.crystal import Crystal
+    from rslaser.optics.lens import Lens
+
+    def interpolate_across_slice(length, nslice, values):
+        return scipy.interpolate.splev(
+            (length / nslice) * (np.arange(nslice) + 0.5),
+            scipy.interpolate.splrep(np.linspace(0, length, len(values)), values),
+        ).tolist()
+
     try:
         p = pulse.LaserPulse(
             params=PKDict(
+                chirp=0,
                 nslice=3,
                 num_sig_long=3,
                 num_sig_trans=6,
@@ -46,15 +58,60 @@ def test_sirepo_compatability():
                 sigx_waist=0.001,
                 sigy_waist=0.001,
                 tau_fwhm=2.35865e-11,
-                tau_0=2.35865e-11,
             ),
         )
+
+        # POSIT: mirror and watchpoints dont need
+        # to be checked since they are sirepo elements
+        # not rslaser elements
+        elements = [
+            (Drift(1), ["default"]),
+            (
+                Crystal(
+                    params=PKDict(
+                        l_scale=0.001,
+                        length=0.02,
+                        n0=interpolate_across_slice(
+                            0.02, 10, [1.75, 1.75, 1.75, 1.75, 1.75, 1.75]
+                        ),
+                        n2=interpolate_across_slice(
+                            0.02, 10, [30.5, 18.3, 10.4, 5.9, 3.3, 1.9]
+                        ),
+                        nslice=10,
+                        A=0.99736924,
+                        B=0.0141972275,
+                        C=-0.260693,
+                        D=0.99892682,
+                        pop_inversion_n_cells=64,
+                        pop_inversion_mesh_extent=0.01,
+                        pop_inversion_crystal_alpha=120,
+                        pop_inversion_pump_waist=0.00164,
+                        pop_inversion_pump_wavelength=5.32e-07,
+                        pop_inversion_pump_gaussian_order=2,
+                        pop_inversion_pump_energy=0.0211,
+                        pop_inversion_pump_type="dual",
+                    ),
+                ),
+                ["n0n2_srw", True, True],
+            ),
+            (Drift(0.5), ["default"]),
+            (Lens(2), ["default"]),
+            (Drift(0.25), ["default"]),
+            (Drift(0.25), ["default"]),
+            (Drift(1.5), ["default"]),
+        ]
+
+        beamline = [0, 1, 2, 3, 4, 5, 6, 7, 0, 8, 0]
+        crystal_count = 0
+        for idx in beamline:
+            e = elements[idx]
+            p = e[0].propagate(p, *e[1])
     except Exception:
         raise AssertionError(
             """
     If this test fails, then alert software team
     indicates rslaser interface is not compatable with
-    sirepo silas
+    sirepo silas master branch
         """
         )
 
