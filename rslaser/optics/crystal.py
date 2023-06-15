@@ -11,8 +11,7 @@ from pykern.pkdebug import pkdp
 import srwlib
 import scipy.constants as const
 from scipy.interpolate import RectBivariateSpline, RegularGridInterpolator
-from scipy.interpolate import splrep
-from scipy.interpolate import splev
+from scipy.interpolate import splrep, splev
 from scipy.optimize import curve_fit
 from scipy.special import gamma
 from rsmath import lct as rslct
@@ -21,7 +20,6 @@ from rslaser.utils import srwl_uti_data as srwutil
 from rslaser.optics.element import ElementException, Element
 from fenics import *
 from mshr import *
-
 
 _N_SLICE_DEFAULT = 50
 _N0_DEFAULT = 1.75
@@ -33,31 +31,32 @@ _CRYSTAL_DEFAULTS = PKDict(
     delta_n=None,
     delta_n_mesh_extent=0.01,  # range [m] of delta_n mesh assuming azimuthal symmetry
     length=0.2,
+    radius=0.01 # [m], crystal radius
     l_scale=1,
     nslice=_N_SLICE_DEFAULT,
     slice_index=0,
-    # A = 9.99988571e-01,
-    # B = 1.99999238e-01,
-    # C = -1.14285279e-04,
-    # D = 9.99988571e-01,
-    A=0.99765495,
-    B=1.41975385,
-    C=-0.0023775,
-    D=0.99896716,
+    A=0.99765495, # A = 9.99988571e-01,
+    B=1.41975385, # B = 1.99999238e-01,
+    C=-0.0023775, # C = -1.14285279e-04,
+    D=0.99896716, # D = 9.99988571e-01,
     radial_n2_factor=1.3,
-    pop_inversion_n_cells=64,
-    pop_inversion_mesh_extent=0.01,  # [m]
-    pop_inversion_crystal_alpha=120.0,  # [1/m], 1.2 1/cm
-    pop_inversion_pump_waist=0.00164,  # [m]
-    pop_inversion_pump_wavelength=532.0e-9,  # [m]
-    pop_inversion_pump_energy=0.0211,  # [J], pump laser energy onto the crystal
-    pop_inversion_pump_type="dual",
-    pop_inversion_pump_gaussian_order=2.0,
-    pop_inversion_pump_offset_x=0.0,
-    pop_inversion_pump_offset_y=0.0,
-    pop_inversion_pump_rep_rate=1.0e3,
+    alpha=120., # [1/m], absorption coefficient for Al2O3    
+    rho= 3980., # [kg/m^3], density for Al2O3
+    Kc= 33., # [W/m K], thermal conductivity for Al203
+    cp= 756., # [J/kg K], specific heat capacity (constant pressure) for Al203
+    Tc= 0., # [C], coolant (or ambient) temperature outside the crystal
+    lambda_seed = 800. # [Å], seed wavelength for thermo-optic coupling factor
+    lambda_pump = 532. # [Å], pump laser operating wavelength
+    pump_waist = 0.00164, # [m] pump laser waist
+    pump_energy = 0.0211, # [J], pump laser energy onto the crystal
+    pump_type = "dual", # pumping type, one of: "left", "right", or "dual"
+    pump_profile = "hog", # pump profile, one of: "uniform", "gaussian", "hog", or "tophat"
+    pump_order = 2., # Gaussian order of the pump profile, used for "hog" profile only
+    pump_offset_x = 0.0, # [m], horizontal offset of pump laser center from crystal center
+    pump_offset_y = 0.0, # [m], veritcal offset of pump laser center from crystal center
+    pump_rate = 1.0e3, # [s^-1], repetition rate of the pump laser
+    num_cells = 64, # number of cells used in propagation calculations
 )
-
 
 class Crystal(Element):
     """
@@ -84,6 +83,7 @@ class Crystal(Element):
             raise self._INPUT_ERROR(f"You've specified negative value(s) for n2")
 
         self.length = params.length
+        self.radius = params.radius
         self.nslice = params.nslice
         self.l_scale = params.l_scale
         self.slice = []
@@ -151,8 +151,8 @@ class Crystal(Element):
 
         # Iterate through laser_pulse and offset all of the fields
         laser_pulse.shift_wavefront(
-            self.slice[0].population_inversion.pump_offset_x,
-            self.slice[0].population_inversion.pump_offset_y,
+            self.slice[0].pump_offset_x,
+            self.slice[0].pump_offset_y,
         )
         for s in slice_array:
 
@@ -177,7 +177,7 @@ class Crystal(Element):
                 laser_pulse = laser_pulse.combine_n2_variation(
                     laser_pulse_copies,
                     s.radial_n2_factor,
-                    s.population_inversion.pump_waist,
+                    s.pump_waist,
                     s.n2,
                 )
             else:
@@ -185,10 +185,7 @@ class Crystal(Element):
             laser_pulse.resize_laser_mesh()
             laser_pulse.flatten_phase_edges()
         # Iterate through laser_pulse and return all of the fields
-        laser_pulse.shift_wavefront(
-            -self.slice[0].population_inversion.pump_offset_x,
-            -self.slice[0].population_inversion.pump_offset_y,
-        )
+        laser_pulse.shift_wavefront(-self.slice[0].pump_offset_x,-self.slice[0].pump_offset_y,)
         laser_pulse.resize_laser_mesh()
         laser_pulse.flatten_phase_edges()
         return laser_pulse
@@ -202,17 +199,17 @@ class Crystal(Element):
         num_long_slices = 180  # no. of longitudinal slices
 
         # values need to be in [cm]
-        crystal_diameter = self.params.pop_inversion_mesh_extent * 2.0 * 1.0e2
+        crystal_diameter = self.radius * 2.0 * 1.0e2
         crystal_length = self.length * 1.0e2
-        pump_waist = self.params.pop_inversion_pump_waist * 1.0e2
+        pump_waist = self.pump_waist * 1.0e2
         # value needs to be in [1/cm]
-        absorption_coefficient = self.params.pop_inversion_crystal_alpha / 1.0e2
+        absorption_coefficient = self.params.alpha / 1.0e2
         # value needs to be in [J]
-        pump_energy = self.params.pop_inversion_pump_energy
+        pump_energy = self.pump_energy
         # value needs to be in [W]
-        pump_power = pump_energy * self.params.pop_inversion_pump_rep_rate
+        pump_power = pump_energy * self.pump_rate
 
-        pump_gaussian_order = self.params.pop_inversion_pump_gaussian_order
+        pump_gaussian_order = self.pump_order
 
         mesh_tol = 2.0e-2  # mesh tolerance
         mesh = _calculate_mesh(crystal_length, crystal_diameter, mesh_density)
@@ -233,7 +230,7 @@ class Crystal(Element):
             np.abs(radial_pts[:, 0] - (0.5 * pump_waist))
         ).argmin()  # max index value of center data range  # JVT +/- 0.5*w_p
 
-        if self.params.pop_inversion_pump_rep_rate == 1.0e3:
+        if self.pump_rate == 1.0e3:
             heat_load = _define_heat_load_expression(
                 pump_waist,
                 absorption_coefficient,
@@ -244,7 +241,7 @@ class Crystal(Element):
             long_temp_profiles = _call_fenics(
                 mesh, heat_load, crystal_diameter, initial_temp, zv, radial_pts
             )
-        elif self.params.pop_inversion_pump_rep_rate == 1.0:
+        elif self.pump_rate == 1.0:
             long_temp_profiles = _calc_temperature_change(
                 pump_waist,
                 absorption_coefficient,
@@ -256,11 +253,15 @@ class Crystal(Element):
                 zv,
             )
         else:
-            print(
-                "No method implemented for a rep rate of {}.".format(
-                    self.params.pop_inversion_pump_rep_rate
-                )
-            )
+            print("No method implemented for a rep rate of {}.".format(self.pump_rate))
+            
+        #
+        dz = self.length/nslices
+        Tslice = zeros(nslices)
+        for n in range(nslices):
+            zl, zr = -self.length/2.+dz*array([n, n+1])
+            slice_pts = eval_points[(eval_points[:,2]>=zl)*(eval_points[:,2]<zr)]
+            Tslice[n] = Ts[slice_pts].mean()
 
         integrated_temps = _calc_T(
             long_temp_profiles, crystal_length, num_long_slices, zv, radial_pts
@@ -295,13 +296,13 @@ class Crystal(Element):
         n0_slice_array = splev(z_crystal_slice, n0_fit)
         n2_slice_array = splev(z_crystal_slice, n2_fit)
 
-        if self.params.pop_inversion_pump_type == "right":
+        if self.pump_type == "right":
             n0_output = n0_slice_array[::-1]
             n2_output = n2_slice_array[::-1]
-        elif self.params.pop_inversion_pump_type == "left":
+        elif self.pump_type == "left":
             n0_output = n0_slice_array
             n2_output = n2_slice_array
-        elif self.params.pop_inversion_pump_type == "dual":
+        elif self.pump_type == "dual":
             n0_output = (n0_slice_array + n0_slice_array[::-1]) / 2.0
             n2_output = n2_slice_array + n2_slice_array[::-1]
 
@@ -395,20 +396,13 @@ class CrystalSlice(Element):
         slice_end = z + (self.length / 2.0)
 
         # calculate correction factor for representing a gaussian pulse with a series of flat-top slices
-        correction_factor = (
-            (
-                np.exp(-self.population_inversion.crystal_alpha * slice_front)
-                - np.exp(-self.population_inversion.crystal_alpha * slice_end)
-            )
-            / self.population_inversion.crystal_alpha
-        ) / (np.exp(-self.population_inversion.crystal_alpha * z) * self.length)
+        correction_factor = ((np.exp(-self.alpha*slice_front)-np.exp(-self.alpha*slice_end))/self.alpha)\
+            /(np.exp(-self.alpha*z)*self.length)
 
         # integrate super-gaussian
-        g_order = self.population_inversion.pump_gaussian_order
+        g_order = self.pump_order
         integral_factor = (2 ** ((g_order - 2.0) / g_order) * gamma(2 / g_order)) / (
-            g_order
-            * (1 / (self.population_inversion.pump_waist**g_order)) ** (2.0 / g_order)
-        )
+            g_order * (1 / (self.pump_waist**g_order)) ** (2.0 / g_order))
 
         pump_wavelength = 532.0  # [nm]
         seed_wavelength = 800.0  # [nm]
@@ -416,35 +410,11 @@ class CrystalSlice(Element):
 
         # Create a default mesh of [num_excited_states/m^3]
         pop_inversion_mesh = (
-            (self.population_inversion.pump_wavelength / (const.h * const.c))
-            * (
-                (
-                    (
-                        1
-                        - np.exp(
-                            -self.population_inversion.crystal_alpha
-                            * self.length
-                            * nslice
-                        )
-                    )
-                    * (1.0 - fraction_to_heating)
-                    * self.population_inversion.pump_energy
-                    * np.exp(
-                        -2.0
-                        * (
-                            np.sqrt(
-                                (xv - self.population_inversion.pump_offset_x) ** 2.0
-                                + (yv - self.population_inversion.pump_offset_y) ** 2.0
-                            )
-                            / self.population_inversion.pump_waist
-                        )
-                        ** g_order
-                    )
-                )
-                / (const.pi * integral_factor)
-            )
-            * np.exp(-self.population_inversion.crystal_alpha * z)
-            * correction_factor
+            (self.lambda_pump / (const.h * const.c))
+            * (((1-np.exp(-self.alpha*self.length*nslice))
+                    * (1.0 - fraction_to_heating)*self.pump_energy* np.exp(-2.0
+                        * (np.sqrt((xv-self.pump_offset_x)**2.0+(yv-self.pump_offset_y)**2.0)/self.pump_waist)**g_order))
+                / (const.pi * integral_factor))*np.exp(-self.alpha * z)*correction_factor
         ) / (self.length * nslice)
 
         return pop_inversion_mesh
@@ -458,57 +428,23 @@ class CrystalSlice(Element):
         slice_end = z + (self.length / 2.0)
 
         # calculate correction factor for representing a gaussian pulse with a series of flat-top slices
-        correction_factor = (
-            (
-                np.exp(-self.population_inversion.crystal_alpha * slice_front)
-                - np.exp(-self.population_inversion.crystal_alpha * slice_end)
-            )
-            / self.population_inversion.crystal_alpha
-        ) / (np.exp(-self.population_inversion.crystal_alpha * z) * self.length)
+        correction_factor = ((np.exp(-self.alpha * slice_front)-np.exp(-self.alpha * slice_end))/ self.alpha)
+            / (np.exp(-self.alpha * z) * self.length)
 
         # integrate super-gaussian
-        g_order = self.population_inversion.pump_gaussian_order
+        g_order = self.pump_order
         integral_factor = (2 ** ((g_order - 2.0) / g_order) * gamma(2 / g_order)) / (
-            g_order
-            * (1 / (self.population_inversion.pump_waist**g_order)) ** (2.0 / g_order)
-        )
-
-        pump_wavelength = 532.0  # [nm]
-        seed_wavelength = 800.0  # [nm]
-        fraction_to_heating = (seed_wavelength - pump_wavelength) / seed_wavelength
+            g_order*(1/(self.pump_waist**g_order)) ** (2.0 / g_order))
 
         # Create a default mesh of [num_excited_states/m^3]
+        fraction_to_heating = (self.lambda_seed-self.lambda_pump)/self.lambda_seed
         pop_inversion_mesh = (
-            (self.population_inversion.pump_wavelength / (const.h * const.c))
-            * (
-                (
-                    (
-                        1
-                        - np.exp(
-                            -self.population_inversion.crystal_alpha
-                            * self.length
-                            * nslice
-                        )
-                    )
-                    * (1.0 - fraction_to_heating)
-                    * self.population_inversion.pump_energy
-                    * np.exp(
-                        -2.0
-                        * (
-                            np.sqrt(
-                                (xv - self.population_inversion.pump_offset_x) ** 2.0
-                                + (yv - self.population_inversion.pump_offset_y) ** 2.0
-                            )
-                            / self.population_inversion.pump_waist
-                        )
-                        ** g_order
-                    )
-                )
-                / (const.pi * integral_factor)
-            )
-            * np.exp(-self.population_inversion.crystal_alpha * z)
-            * correction_factor
-        ) / (self.length * nslice)
+            (self.lambda_pump / (const.h * const.c))
+            * (((1- np.exp(-self.alpha*self.length*nslice))
+            * (1.0 - fraction_to_heating)*self.pump_energy
+            * np.exp(-2.0* (np.sqrt((xv - self.pump_offset_x)**2.0 + (yv-self.pump_offset_y)**2.0)
+                / self.pump_waist)** g_order))/(const.pi * integral_factor))*np.exp(-self.alpha * z)
+            * correction_factor) / (self.length * nslice)
 
         return pop_inversion_mesh
 
@@ -518,14 +454,10 @@ class CrystalSlice(Element):
         return left_pump_mesh + right_pump_mesh
 
     def _initialize_excited_states_mesh(self, params, nslice):
-        self.population_inversion = PKDict()
-        for k in params:
-            if "pop_inversion" in k:
-                self.population_inversion[k.replace("pop_inversion_", "")] = params[k]
         x = np.linspace(
-            -self.population_inversion.mesh_extent,
-            self.population_inversion.mesh_extent,
-            self.population_inversion.n_cells,
+            -self.mesh_extent,
+            self.mesh_extent,
+            self.num_cells,
         )
         xv, yv = np.meshgrid(x, x)
 
@@ -533,7 +465,7 @@ class CrystalSlice(Element):
             dual=self._dual_pump,
             left=self._left_pump,
             right=self._right_pump,
-        )[self.population_inversion.pump_type](nslice, xv, yv)
+        )[self.pump_type](nslice, xv, yv)
 
     def _propagate_attenuate(self, laser_pulse, calc_gain, nl_kick):
         # n_x = wfront.mesh.nx  #  nr of grid points in x
@@ -944,9 +876,9 @@ class CrystalSlice(Element):
             temp_array = np.copy(self.pop_inversion_mesh)
 
             a_x = np.linspace(
-                -self.population_inversion.mesh_extent,
-                self.population_inversion.mesh_extent,
-                self.population_inversion.n_cells,
+                -self.mesh_extent,
+                self.mesh_extent,
+                self.num_cells,
             )
             a_y = a_x
             b_x = np.linspace(b.mesh.xStart, b.mesh.xFin, b.mesh.nx)
@@ -958,11 +890,7 @@ class CrystalSlice(Element):
 
             a_x = a.x
             a_y = a.y
-            b_x = np.linspace(
-                -self.population_inversion.mesh_extent,
-                self.population_inversion.mesh_extent,
-                self.population_inversion.n_cells,
-            )
+            b_x = np.linspace(-self.mesh_extent,self.mesh_extent,self.num_cells,)
             b_y = b_x
 
         if not (np.array_equal(a_x, b_x) and np.array_equal(a_y, b_y)):
@@ -1031,16 +959,11 @@ class CrystalSlice(Element):
         ) * np.log(
             1
             + np.exp(cross_sec * temp_pop_inversion[gain_condition] * self.length)
-            * (
-                np.exp(degen_factor * cross_sec * n_incident_photons[gain_condition])
-                - 1.0
-            )
+            * (np.exp(degen_factor * cross_sec * n_incident_photons[gain_condition])- 1.0)
         )
 
         # Calculate change factor for pop_inversion, note it has the same dimensions as lp_wfr
-        change_pop_mesh = -(
-            degen_factor * n_incident_photons * (energy_gain - 1.0) / self.length
-        )
+        change_pop_mesh = -(degen_factor * n_incident_photons * (energy_gain - 1.0) / self.length)
         change_pop_inversion = PKDict(
             mesh=change_pop_mesh,
             x=np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx),
