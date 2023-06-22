@@ -290,6 +290,7 @@ class Crystal(Element):
             self.params.pop_inversion_pump_rep_rate,
             pump_gaussian_order,
             pump_waist,
+            method,
         )
 
         n0_output, n2_output = _adjust_n0n2_arrays(
@@ -312,6 +313,22 @@ class Crystal(Element):
                 s.n2 = n2_output[s.slice_index]
 
         return n0_output, n2_output, full_crystal_abcd_mat
+
+    def extract_excited_states(self):
+        long_excited_states = np.zeros(self.nslice)
+        trans_excited_states = np.zeros(
+            (self.params.pop_inversion_n_cells, self.params.pop_inversion_n_cells)
+        )
+        for j in range(self.nslice):
+            thisSlice = self.slice[j]
+            dx = (
+                2.0 * thisSlice.population_inversion.mesh_extent
+            ) / thisSlice.population_inversion.n_cells
+            cell_area = dx**2.0 * thisSlice.length
+            trans_excited_states += thisSlice.pop_inversion_mesh * cell_area
+            long_excited_states[j] = np.sum(thisSlice.pop_inversion_mesh * cell_area)
+
+        return long_excited_states, trans_excited_states
 
 
 class CrystalSlice(Element):
@@ -464,7 +481,7 @@ class CrystalSlice(Element):
             seed_wavelength = 800.0  # [nm]
             fraction_to_heating = (seed_wavelength - pump_wavelength) / seed_wavelength
 
-            # Create mesh of [num_excited_states/m^3]
+            # Create mesh of [num_excited_states/m^3] pop_inversion_mesh
             temp_mesh = (
                 (self.population_inversion.pump_wavelength / (const.h * const.c))
                 * (
@@ -1003,6 +1020,7 @@ class CrystalSlice(Element):
         thisSlice.n_photons_2d.mesh *= energy_gain
 
         # Update the wavefront itself
+        """
         intensity_2d = srwutil.calc_int_from_elec(lp_wfr)
         phase_1d = srwlib.array("d", [0] * lp_wfr.mesh.nx * lp_wfr.mesh.ny)
         srwl.CalcIntFromElecField(phase_1d, lp_wfr, 0, 4, 3, lp_wfr.mesh.eStart, 0, 0)
@@ -1020,15 +1038,16 @@ class CrystalSlice(Element):
         gain_im0_ex = np.multiply(gain_e_norm, np.sin(gain_phase))
         gain_re0_ey = np.zeros(np.shape(gain_re0_ex))
         gain_im0_ey = np.zeros(np.shape(gain_im0_ex))
-
         """
-        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(thisSlice.wfr)
+        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(
+            thisSlice.wfr
+        )
 
-        gain_re0_ex = re0_2d_ex* np.sqrt(energy_gain)
-        gain_im0_ex = im0_2d_ex* np.sqrt(energy_gain)
-        gain_re0_ey = re0_2d_ey* np.sqrt(energy_gain)
-        gain_im0_ey = im0_2d_ey* np.sqrt(energy_gain)
-        """
+        gain_re0_ex = re0_2d_ex * np.sqrt(energy_gain)
+        gain_im0_ex = im0_2d_ex * np.sqrt(energy_gain)
+        gain_re0_ey = re0_2d_ey * np.sqrt(energy_gain)
+        gain_im0_ey = im0_2d_ey * np.sqrt(energy_gain)
+        # """
 
         x = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx)
         y = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny)
@@ -1364,6 +1383,7 @@ def _calc_n_from_T(
     pump_rep_rate,
     pump_gaussian_order,
     pump_waist,
+    method,
 ):
     # Calculate index of refraction for each slice from T(r), using a formula from Tapping (1986)
     # chi_T taken from: 'Thermal lens effect model of Ti:sapphire for use in high-power laser amplifiers' - Jeong 2018
@@ -1397,7 +1417,7 @@ def _calc_n_from_T(
         np.abs(radial_pts[:, 0] - (0.5 * pump_waist))
     ).argmin()  # max index value of center data range  # JVT +/- 0.5*w_p
 
-    if (pump_rep_rate == 1.0) and (pump_gaussian_order > 2):
+    if (method == "fenics") and (pump_rep_rate == 1.0) and (pump_gaussian_order > 2):
         for j in range(num_long_slices):
             n0_vals[j] = np.max(n_int_vals[j, laser_range_min:laser_range_max])
     else:

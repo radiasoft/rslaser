@@ -546,6 +546,19 @@ class LaserPulse(ValidatorBase):
                 thisSlice.initial_laser_xy.y,
             )
 
+    def calc_total_energy(self):
+        photon_e_ev = np.zeros(self.nslice)
+        photon_number = np.zeros(self.nslice)
+
+        for laser_index_i in np.arange(self.nslice):
+            photon_number[laser_index_i] = np.sum(
+                self.slice[laser_index_i].n_photons_2d.mesh
+            )
+            photon_e_ev[laser_index_i] = self.slice[laser_index_i].photon_e_ev
+
+        pulse_energy = photon_number * photon_e_ev * const.e
+        return np.sum(pulse_energy)
+
     def _validate_params(self, input_params, files):
         # if files and input_params.nslice > 1:
         #     raise self._INPUT_ERROR("cannot use file inputs with more than one slice")
@@ -756,11 +769,11 @@ class LaserPulseSlice(ValidatorBase):
             ex_imag = np.multiply(e_norm, np.sin(wfs_data))
 
             # scale the wfr sensor data
-            self.wfs_norm_factor = 2841.7370456965646
+            self.wfs_norm_factor = 3378.048302768955  # 2841.7370456965646
 
             # scale for slice location
             number_slices_correction = np.exp(
-                -self._pulse_pos**2.0 / (2.0 * self.sig_s) ** 2.0
+                -self._pulse_pos**2.0 / (2.0 * self.sig_s**2.0)
             )
 
             ex_real *= number_slices_correction * self.wfs_norm_factor
@@ -782,8 +795,8 @@ class LaserPulseSlice(ValidatorBase):
 
         # Since pulseE = fwhm_tau * spot_size * intensity, new_pulseE = old_pulseE / fwhm_tau
         # Adjust for the length of the pulse + a constant factor to make pulseE = sum(energy_2d)
-        constant_factor = 7.3948753166511745
-        length_factor = constant_factor / self.ds
+        constant_factor = 1.198945869831954  # 7.3948753166511745
+        length_factor = constant_factor / (self.sig_s / params.nslice)  # / self.ds
 
         # calculate field energy in this slice
         sliceEnInt = (
