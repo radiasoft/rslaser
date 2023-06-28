@@ -18,6 +18,7 @@ from rsmath import lct as rslct
 from rslaser.utils.validator import ValidatorBase
 from rslaser.utils import srwl_uti_data as srwutil
 from rslaser.optics.element import ElementException, Element
+from rslaser.thermal import ThermoOptic
 from fenics import *
 from mshr import *
 
@@ -190,128 +191,66 @@ class Crystal(Element):
         laser_pulse.flatten_phase_edges()
         return laser_pulse
 
-    def calc_n0n2_fenics(self, set_n=False, initial_temp=0.0, mesh_density=80):
-        # initial_temp [degC],
+    def calc_n0n2(self, set_n=False, mesh_density=80, method="fenics"):
         # mesh_density [int]: value ≥ 120 will produce more accurate results; slower, but closer to numerical conversion
-
+        
+        # Validate choice of solution method
+        method = method.lower()
+        if method not in ("fenics", "analytical"):
+            raise ValueError("\'method\' must be one of: fenics, analytical")
+        
+        # Initialize a thermo-optic simulator object
+        TO_Sim = ThermoOptic(self, mesh_density)
+                
+        # Set evaluation points for thermo-optic calculations
         n_radpts = 201  # no. of radial points at which to extract data
         n_longpts = 201  # no. of longitudinal points at which to extract data
-        num_long_slices = 180  # no. of longitudinal slices
-
-        # values need to be in [cm]
-        crystal_diameter = self.radius * 2.0 * 1.0e2
-        crystal_length = self.length * 1.0e2
-        pump_waist = self.pump_waist * 1.0e2
-        # value needs to be in [1/cm]
-        absorption_coefficient = self.params.alpha / 1.0e2
-        # value needs to be in [J]
-        pump_energy = self.pump_energy
-        # value needs to be in [W]
-        pump_power = pump_energy * self.pump_rate
-
-        pump_gaussian_order = self.pump_order
-
-        mesh_tol = 2.0e-2  # mesh tolerance
-        mesh = _calculate_mesh(crystal_length, crystal_diameter, mesh_density)
-        xvals = mesh.coordinates()[:, 0]
-        yvals = mesh.coordinates()[:, 1]
-        zvals = mesh.coordinates()[:, 2]
-        xmin, xmax = xvals.min(), xvals.max()
-        ymin, ymax = yvals.min(), yvals.max()
-        zmin, zmax = zvals.min(), zvals.max()
-        xv = np.linspace(xmin * (1.0 - mesh_tol), xmax * (1.0 - mesh_tol), n_radpts)
-        yv = np.linspace(ymin * (1.0 - mesh_tol), ymax * (1.0 - mesh_tol), n_radpts)
-        zv = np.linspace(zmin * (1.0 - mesh_tol), zmax * (1.0 - mesh_tol), n_longpts)
-        radial_pts = np.asarray([(x_, 0, 0) for x_ in xv])
-        laser_range_min = (
-            np.abs(radial_pts[:, 0] - (-0.5 * pump_waist))
-        ).argmin()  # min index value of center data range  # JVT +/- 0.5*w_p
-        laser_range_max = (
-            np.abs(radial_pts[:, 0] - (0.5 * pump_waist))
-        ).argmin()  # max index value of center data range  # JVT +/- 0.5*w_p
-
-        if self.pump_rate == 1.0e3:
-            heat_load = _define_heat_load_expression(
-                pump_waist,
-                absorption_coefficient,
-                crystal_length,
-                pump_power,
-                pump_gaussian_order,
-            )
-            long_temp_profiles = _call_fenics(
-                mesh, heat_load, crystal_diameter, initial_temp, zv, radial_pts
-            )
-        elif self.pump_rate == 1.0:
-            long_temp_profiles = _calc_temperature_change(
-                pump_waist,
-                absorption_coefficient,
-                crystal_length,
-                crystal_diameter,
-                pump_energy,
-                pump_gaussian_order,
-                xv,
-                zv,
-            )
-        else:
-            print("No method implemented for a rep rate of {}.".format(self.pump_rate))
+        TO_Sim.set_points((n_radpts, 0, n_longpts))
+        
+        # For high rep-rates, solve steady-state heat equation
+        if (method=="fenics") and (self.pump_rate==1.0e3):
             
-        #
+            # Set boundary values for thermo-optic simulations
+            bc_tol = 2.*self.radius*(self.radius/40.0)  # 2 * rad * delta(rad)
+            TO_Sim.set_boundary(bc_tol)
+            
+            # Set thermal load & carry out thermo-optic simulation
+            TO_Sim.set_load("hog")
+            Trz = TO_Sim.solve_steady()
+            
+        # For low rep-rates, compute steady state solution
+        elif (method=="fenics") and (self.pump_rate==1.):
+            Trz = TO_Sim.hog_solution()
+            
+        # Raise an error for invalid combinations of rep-rate and method
+        elif method=="fenics":
+            raise RuntimeError("No solution method for a rep-rate of {:.3f}".format(self.pump_rate))
+            
+        # For analytical solutions, compute Innocenzi solution
+        else:
+            Trz = TO_Sim.gaussian_solution()
+        
+        # Average temperature profile over longitudinal slices
+        nslices = 180  # no. of longitudinal slices
         dz = self.length/nslices
         Tslice = zeros(nslices)
         for n in range(nslices):
             zl, zr = -self.length/2.+dz*array([n, n+1])
-            slice_pts = eval_points[(eval_points[:,2]>=zl)*(eval_points[:,2]<zr)]
-            Tslice[n] = Ts[slice_pts].mean()
+            slice_pts = T0_Sim.eval_points[(TO_Sim.eval_points[:,2]>=zl)*(TO_Sim.eval_points[:,2]<zr)]
+            Tslice[n] = Trz[slice_pts].mean()
+        TO_Sim.set_points((n_radpts, 0, nslices))
+        
+        # Compute indices of refraction & ABCD matrices for each slice
+        nT, nFit = TO_Sim.compute_indices(Tslice)
+        ABCDs, full_ABCD = TO_Sim.compute_ABCD(nFit)
 
-        integrated_temps = _calc_T(
-            long_temp_profiles, crystal_length, num_long_slices, zv, radial_pts
-        )
-
-        # Calculate index of refraction for each slice, from T(r)
-        n0_full_array, n2_full_array = _calc_n_from_T(
-            num_long_slices,
-            radial_pts,
-            integrated_temps,
-            laser_range_min,
-            laser_range_max,
-        )
-
-        # fix negative n2 vals and ****divide through by 2 based on Gaussian duct definition n(r) = n0 - 1/2*n2*r^2**** - see rp-photonics.com
-        n2_full_array = np.multiply(n2_full_array, -2.0)
-        n2_full_array = np.multiply(n2_full_array, 1.0e4)
-
-        # Look at why n2 goes negative...
-        n2_full_array[n2_full_array <= 0.0] = 1.0e-6
-
-        # Calculate the ABCD matrix for the total crystal (usable with abcd_lct if no gain)
-        full_crystal_abcd_mat = _calc_full_abcd_mat(
-            crystal_length, n0_full_array, n2_full_array
-        )
-
-        z_full_array = np.linspace(0.0, self.length, len(n0_full_array))
-        n0_fit = splrep(z_full_array, n0_full_array)
-        n2_fit = splrep(z_full_array, n2_full_array)
-
-        z_crystal_slice = (self.length / self.nslice) * (np.arange(self.nslice) + 0.5)
-        n0_slice_array = splev(z_crystal_slice, n0_fit)
-        n2_slice_array = splev(z_crystal_slice, n2_fit)
-
-        if self.pump_type == "right":
-            n0_output = n0_slice_array[::-1]
-            n2_output = n2_slice_array[::-1]
-        elif self.pump_type == "left":
-            n0_output = n0_slice_array
-            n2_output = n2_slice_array
-        elif self.pump_type == "dual":
-            n0_output = (n0_slice_array + n0_slice_array[::-1]) / 2.0
-            n2_output = n2_slice_array + n2_slice_array[::-1]
-
+        # Set n0/n2 values for crystal slices if desired
         if set_n:
             for s in self.slice:
-                s.n0 = n0_output[s.slice_index]
-                s.n2 = n2_output[s.slice_index]
+                s.n0 = nFit[s.slice_index, 0, 1]
+                s.n2 = nFit[s.slice_index, 0, 0]
 
-        return n0_output, n2_output, full_crystal_abcd_mat
+        return nFit[:,0,1], nFit[:,0,0], full_ABCD
 
 
 class CrystalSlice(Element):
@@ -1131,259 +1070,3 @@ class CrystalSlice(Element):
         thisSlice.wfr = wfr1
 
         return thisSlice
-
-
-def _calculate_mesh(crystal_length, crystal_diameter, mesh_density):
-    # geometry dimensions:
-    #    crystal_length [cm]
-    #    crystal_diameter [cm]
-
-    # derived parameters
-    rad = crystal_diameter / 2.0  # radius [cm]
-    lh = crystal_length / 2.0  # half-length [cm]
-    rad2 = rad**2.0  # radius squared [cm^2]
-
-    # cylinder = Cylinder('coordinate of center of the top circle',
-    #                     'coordinate of center of the bottom circle',
-    #                     'radius of the circle at the top',
-    #                     'radius of the circle at the bottom')
-    geometry = Cylinder(Point(0.0, 0.0, lh), Point(0.0, 0.0, -lh), rad, rad)
-    return generate_mesh(geometry, mesh_density)
-
-
-def _define_heat_load_expression(
-    pump_waist, absorption_coefficient, crystal_length, pump_power, pump_order
-):
-
-    w_p = pump_waist  # updated beam width [cm]
-    alpha_h = absorption_coefficient  # absorption coefficient [1/cm]
-    half_length = crystal_length / 2.0  # half-length [cm]
-
-    # calculate incremental temperature deposition
-    pump_wavelength = 532.0  # [nm]
-    seed_wavelength = 800.0  # [nm]
-    P_abs = (
-        pump_power * (seed_wavelength - pump_wavelength) / seed_wavelength
-    )  # absorbed power [W]
-    integral_gaus_order_n = (
-        2.0 ** ((pump_order - 2.0) / pump_order) * gamma(2.0 / pump_order)
-    ) / (pump_order * (1.0 / (w_p**pump_order)) ** (2.0 / pump_order))
-    V_eff = (
-        integral_gaus_order_n
-        * (np.pi / alpha_h)
-        * (1.0 - np.exp(-alpha_h * crystal_length))
-    )  # effective volume [cm^3]
-
-    K_c_tisaph = (
-        33.0 / 100.0
-    )  # thermal conductivity [W/cm/K] https://www.rp-photonics.com/titanium_sapphire_lasers.html
-
-    dQ_incr = P_abs / V_eff  # incremental heat deposition [W/cm^3]
-    dT_incr = dQ_incr / K_c_tisaph  # incremental temperature deposition [K/cm^2]
-
-    heat_load = Expression(
-        "dT * exp( -2.0 * pow(pow(x[0], 2.0) + pow(x[1], 2.0), order / 2.0) / (pow(w_p, order))) * exp(-alpha_h * (x[2] + lh))",
-        degree=1,
-        dT=dT_incr,
-        w_p=w_p,
-        alpha_h=alpha_h,
-        lh=half_length,
-        order=pump_order,
-    )
-    return heat_load
-
-
-def _calc_temperature_change(
-    pump_waist,
-    absorption_coefficient,
-    crystal_length,
-    crystal_diameter,
-    pump_energy,
-    pump_order,
-    xv,
-    zv,
-):
-
-    w_p = pump_waist  # updated beam width [cm]
-    alpha_h = absorption_coefficient  # absorption coefficient [1/cm]
-    half_length = crystal_length / 2.0  # half-length [cm]
-
-    # c_p is temperature and doping dependent, for now approximate with a single value
-    specific_heat_capacity = 0.7788  # J/g/K (at 300K, for sapphire)
-    density = 3.98  # g/cc
-
-    integral_gaus_order_n = (
-        2.0 ** ((pump_order - 2.0) / pump_order) * gamma(2.0 / pump_order)
-    ) / (pump_order * (1.0 / (w_p**pump_order)) ** (2.0 / pump_order))
-    # effective volume [cm^3]
-    V_eff = (
-        integral_gaus_order_n
-        * (np.pi / alpha_h)
-        * (1.0 - np.exp(-alpha_h * crystal_length))
-    )  # effective volume [cm^3]
-    mass = V_eff * density  # grams
-
-    pump_wavelength = 532.0  # [nm]
-    seed_wavelength = 800.0  # [nm]
-    J_abs = (
-        pump_energy * (seed_wavelength - pump_wavelength) / seed_wavelength
-    )  # absorbed energy [J]
-
-    xv_2d, zv_2d = np.meshgrid(xv, zv)
-
-    radial_term = np.exp(
-        -2.0 * (xv_2d**2.0) ** (pump_order / 2.0) / (w_p**pump_order)
-    )
-    longitudinal_term = np.exp(-alpha_h * (zv_2d + half_length))
-    magnitude_term = J_abs / (specific_heat_capacity * mass)
-
-    long_temp_profiles = magnitude_term * radial_term * longitudinal_term
-
-    return long_temp_profiles.T
-
-
-def _call_fenics(mesh, heat_load, crystal_diameter, initial_temp, zv, radial_pts):
-
-    # define function space on mesh
-    V = FunctionSpace(mesh, "P", 1)
-
-    rad = crystal_diameter / 2.0  # radius [cm]
-    rad2 = rad**2.0  # radius squared [cm^2]
-
-    # define Dirichlet boundary condition for sides at r_max
-    bc_tol = 2.0 * rad * (rad / 40.0)  # 2 * rad * delta(rad)
-
-    def boundary_D(x, on_boundary):
-        return on_boundary and near(x[0] * x[0] + x[1] * x[1], rad2, bc_tol)
-
-    boundary_condition = DirichletBC(V, Constant(initial_temp), boundary_D)
-
-    # define variational problem
-    fenics_solution = Function(V)
-    v = TestFunction(V)
-
-    # source term
-    f = heat_load
-
-    # differential eqn to be solved
-    F = (
-        dot(grad(fenics_solution), grad(v)) * dx - f * v * dx
-    )  # w/ Dirichlet + initial condition
-
-    # execute simulation
-    set_log_level(30)
-    solve(F == 0.0, fenics_solution, boundary_condition)
-
-    # note: throws an error to evaluate at the limits of radial_pts -
-    # reduce the value of radial_pts by some factor, rad_fac
-    rad_fac = 0.9
-
-    # longitudinal temperature profiles of a range of radii values ranging from +/- r_max
-    long_temp_profiles = np.zeros((len(radial_pts), len(zv)))
-    for j in range(len(radial_pts)):
-        long_temp_profiles[j] = [
-            fenics_solution(pt)
-            for pt in [(radial_pts[j][0] * rad_fac, 0.0, z_) for z_ in zv]
-        ]
-
-    return long_temp_profiles
-
-
-def _calc_T(long_temp_profiles, crystal_length, num_long_slices, zv, radial_pts):
-
-    dslice_ind = int(
-        (len(radial_pts) - 1) / num_long_slices
-    )  # size of of slice indeces
-
-    # divide long_temp_profiles into n longitudinal slices
-    uz_array = np.zeros((num_long_slices, dslice_ind, len(radial_pts)))
-    uz_array[0, :, :] = np.transpose(long_temp_profiles[:, 0:dslice_ind])
-    for j in range(num_long_slices - 1):
-        uz_array[j + 1, :, :] = np.transpose(
-            long_temp_profiles[:, (dslice_ind * (j + 1)) : (dslice_ind * (j + 2))]
-        )
-
-    # calculate longitudinal step size, dz
-    dz = (zv[len(zv) - 1] - zv[0]) / (len(zv) - 1.0)
-
-    radial_pts_x = np.array(radial_pts)[:, 0]
-
-    # integrate longitudinal temperature profiles
-    integrated_temps = np.zeros((num_long_slices, len(radial_pts_x)))
-    for j in range(num_long_slices):
-        for i in range(len(radial_pts_x)):
-            integrated_temps[j, i] = (
-                np.sum(uz_array[j, :, i]) * dz / (crystal_length / num_long_slices)
-            )
-
-    return integrated_temps
-
-
-def _calc_n_from_T(
-    num_long_slices, radial_pts, integrated_temps, laser_range_min, laser_range_max
-):
-    # Calculate index of refraction for each slice from T(r), using a formula from Tapping (1986)
-    # chi_T taken from: 'Thermal lens effect model of Ti:sapphire for use in high-power laser amplifiers' - Jeong 2018
-
-    chi_T = 1.28e-5
-    n_int_vals = np.zeros((num_long_slices, len(integrated_temps[0, :])))
-    for j in range(num_long_slices):
-        for i in range(len(integrated_temps[0, :])):
-            n_int_vals[j, i] = (
-                1.75991
-                + (chi_T * integrated_temps[j, i])
-                + (3.1e-9 * integrated_temps[j, i] ** 2.0)
-            )
-
-    def _quad_int0(x, A, B):
-        # quad fit function
-        y = A * x**2.0 + B
-        return y
-
-    radial_pts_x = np.array(radial_pts)[:, 0]
-
-    # create arrays for n_int(r) for region within laser radius and apply quadratic fit
-    # extract n0 and n2 values
-    n2_vals = np.zeros((num_long_slices))
-    n0_vals = np.zeros((num_long_slices))
-    parameters_q_intn = np.zeros((num_long_slices, 2))
-    covariance_q_intn = np.zeros((num_long_slices, 2, 2))
-    for j in range(num_long_slices):
-        parameters_q_intn[j, :], covariance_q_intn[j, :] = curve_fit(
-            _quad_int0,
-            radial_pts_x[laser_range_min:laser_range_max],
-            n_int_vals[j, laser_range_min:laser_range_max],
-        )
-        n2_vals[j] = parameters_q_intn[j, 0]
-        n0_vals[j] = parameters_q_intn[j, 1]
-
-    return n0_vals, n2_vals
-
-
-def _calc_full_abcd_mat(crystal_length, n0_vals, n2_vals):
-    # Calculate the ABCD matrix for the entire crystal
-
-    num_long_slices = len(n0_vals)
-    gamma_vals = np.zeros(num_long_slices)
-    abcd_mats = np.zeros((num_long_slices, 2, 2))
-    for j in range(num_long_slices):
-        # extract gamma_vals
-        gamma_vals[j] = np.sqrt(n2_vals[j] / n0_vals[j])
-        gamma_z = gamma_vals[j] * (crystal_length / num_long_slices)
-
-        # calculate ABCD matrices for each crystal slice
-        abcd_mats[j, 0, 0] = np.cos(gamma_z)
-        abcd_mats[j, 0, 1] = (1.0 / n0_vals[j] / gamma_vals[j]) * np.sin(gamma_z)
-        abcd_mats[j, 1, 0] = (-(n0_vals[j] * gamma_vals[j])) * np.sin(gamma_z)
-        abcd_mats[j, 1, 1] = np.cos(gamma_z)
-
-    # calculate total ABCD matrix by multiplying matrices for individual slices in order M_n-1 * M_n-2 * ... * M_0
-    abcd_mat_tot_full = np.array(
-        [[1, 0], [0, 1]]
-    )  # initialize total ABCD mat as identity for first multiplication with M_n-1
-    for j in range(num_long_slices):
-        abcd_mat_tot_full = np.matmul(
-            abcd_mat_tot_full, abcd_mats[num_long_slices - j - 1, :, :]
-        )
-
-    return abcd_mat_tot_full

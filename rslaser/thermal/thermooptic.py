@@ -30,15 +30,13 @@ class ThermoOptic:
     }
 
     # Expressions for wavelength- & temperature-dependent indices of refraction
-    #   - n0 expressions are linear fits to wavelength-dependent data ()
+    #   - n0 values (first terms) are from RP Photonics, www.rp-photonics.com/
     #   - nT expression for Al203 are from Tapping & Reilly (1986), doi:10.1364/JOSAA.3.000610
-    #   - nT expression for Ti:Al2O3 are from the notebooks in rslaser_scratch
     #   - nT expression for NdYAG are from Brown (1998), doi:10.1109/3.736113
     
     INDICES = {
-        "Al2O3" : lambda l, T: (1.78851443-3.51740538e-05*l)+1.229e-5*T+3.1e-9*T**2,
-        "Ti:Al2O3" : lambda T: 1.75991 + 1.28e-5*T + 3.1e-9*T**2,
-        "NdYAG": lambda l, T: (1.84762413-2.78422274e-05*l)+(-2.59e-6+2.61e-8*T+6.02e-11*T**2)*T,
+        "Al2O3" : lambda T: 1.75991 + 1.28e-5*T + 3.1e-9*T**2,
+        "NdYAG": lambda T: 1.82 + (-2.59e-6+2.61e-8*T+6.02e-11*T**2)*T,
     }
     
     # Boundary condition types
@@ -280,7 +278,7 @@ class ThermoOptic:
         # Evaluate the steady state solution for uniform heat load at all evaluation points
         zs = self.eval_pts[:,2]
         rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
-        Ts = dT*exp(-2.*(rs**2.)**(order/2.0)/(wp**order))*exp(-alpha*(zs+L/2.))
+        Ts = dT*exp(-2.*(rs/wp)**order)*exp(-alpha*(zs+L/2.))
         return Ts
     
     def tophat_solution(self):
@@ -308,7 +306,7 @@ class ThermoOptic:
         Ts[rs>wp] *= 2*log(r0/r)
         return Ts
                              
-    def compute_indices(self, Ts, material="Ti:Al2O3", fit_width=1.6e-3):
+    def compute_indices(self, Ts, material="Ti:Al2O3", fit_width=None):
         u"""
         Computes indices of refraction based on material & temperature
         
@@ -318,9 +316,13 @@ class ThermoOptic:
         * `fit_edge`- width of central region used in curve fitting (m)
         """
         
+        # Use default fit_width relative to pump waist if none given
+        if not fit_width:
+            fit_width = .5*self.crystal.pump_waist
+        
         # Define temperature dependent index & fitting functions
         nfun = self.INDICES[material]
-        quad_fit = lambda x, A, B: A * x**2.0 + B
+        quad_fit = lambda x, A, B: -0.5*A * x**2.0 + B
         
         # Define short names for useful quantities
         zs = self.eval_pts[:,2]
@@ -376,15 +378,15 @@ class ThermoOptic:
         """
         
         # Define shortnames for useful quantities
-        L = self.crystal.length
         nz = len(self.eval_pts[:,2])
+        dz = self.crystal.length/nz
         
         # Compute ABCD matrices at each longitudinal point
         ABCDs = zeros((nz, 2, 2))+0j
         for z in range(nz):
             n2, n0 = ns[z,0]
             gamma = (n2/n0+0j)**.5
-            ABCDs[z] = [[cos(gamma*L/nz), sin(gamma*L/nz)/(n0*gamma)],[-n0*gamma*sin(gamma*L/nz), cos(gamma*L/nz)]]
+            ABCDs[z] = [[cos(gamma*dz), sin(gamma*dz)/(n0*gamma)],[-n0*gamma*sin(gamma*dz), cos(gamma*dz)]]
             
         # Compute total ABCD matrix
         full_ABCD = ABCD[::-1].prod(dim=0)
