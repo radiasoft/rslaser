@@ -68,7 +68,7 @@ class Crystal(Element):
             note: n0, n2 should be an array of length nslice; if nslice = 1, they should be single values
             length (float): total length of crystal [m]
             nslice (int): number of crystal slices
-            l_scale: length scale factor for LCT propagation
+            l_scale: length scale factor for L3CT propagation
     """
 
     _DEFAULTS = _CRYSTAL_DEFAULTS

@@ -2,7 +2,7 @@
 ### June 2023
 
 from fenics import *
-from h5py import 
+from h5py import File
 from numpy import array, zeros, pi
 from scipy.special import gamma, expi
 from mshr import Cylinder, generate_mesh
@@ -70,7 +70,7 @@ class ThermoOptic:
         """
         
         # Validate choice of heat load & directly set if a FEniCS Expression/UserExpression was given
-        if !isinstance(heat_load, (str, Expression, UserExpression)):
+        if not isinstance(heat_load, (str, Expression, UserExpression)):
             raise ValueError("\'heat_load\' must be a str or FEniCS Expression/UserExpression")
         elif isinstance(heat_load, (Expression, UserExpression)):
             self.heat_load = heat_load
@@ -114,7 +114,7 @@ class ThermoOptic:
         if bc_type not in self.BCTYPES:
             raise NotImplementedError("\'bc_type\' must be one of: {:s}".format(", ".join(self.BCTYPES)))
         BC = self.BCTYPES[bc_type]
-        if (!isinstance(bc_tol, float)) or (bc_tol<=0):
+        if (not isinstance(bc_tol, float)) or (bc_tol<=0):
             raise ValueError("\'bc_tol\' must be a float greater than zero")
         boundary = lambda x, on_boundary: on_boundary and near(x[0]*x[0]+x[1]*x[1], r**2., bc_tol)
         self.boundary = BC(self.space, Constant(self.crystal.Tc), boundary)
@@ -129,12 +129,12 @@ class ThermoOptic:
         """
         
         # Validate choice of evaluation point numbers & edge
-        if !isinstance(npts, (tuple, list)) | len(npts)!=3:
+        if (not isinstance(npts, (tuple, list))) | (len(npts)!=3):
             raise ValueError("\'npts\' must be a list or tuple of 3 integers")
         if edge<=0 | edge>1:
             raise ValueError("\'edge\' must be a number in the range (0, 1]")
         nr, nw, nz = npts
-        if !nr & !nz:
+        if not (nr or nz):
             raise ValueError("number of points along either radial or longitudinal axis must be non-zero")
 
         # Construct cylindrical grid of evaluation points
@@ -146,7 +146,7 @@ class ThermoOptic:
         else:
             self.eval_points = array([[[0.,0.,z]]+[[r,0.,z] for r in rs] for z in zs]).reshape((nz*(nr+1),3))
                             
-    def solve_time(self, runtime, dt=1e-3, load_off=None, save=False, path="./T-crystal"):
+    def solve_time(self, runtime, dt=1e-3, load_off=None, save=False, path="./T-crystal.h5"):
         u"""
         Solves the fully time-dependent heat equation for the Crystal
         
@@ -154,7 +154,7 @@ class ThermoOptic:
         """
         
         # Ensure that a heat load, boundary conditions, & evaluation points have been set
-        if (!self.heat_load | !self.boundary | !self.eval_points):
+        if (not self.heat_load) | (not self.boundary) | (not self.eval_points):
             raise RuntimeError("must set heat load, boundary conditions, & evaluation points prior to simulation")
         
         # Set FEniCS log & define shortnames for useful quantities
@@ -200,10 +200,12 @@ class ThermoOptic:
                 Ts[n,:] = [T(pt) for pt in self.eval_points]
         
         # Return temperature field, saving if requested
-        if save: npsave(save_path, Ts)
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset(data=Ts)
         return Ts
         
-    def solve_steady(self, save=False, path="./T-crystal"):
+    def solve_steady(self, save=False, path="./T-crystal.h5"):
         u"""
         Solves the steady state (time-independent) heat equation for the Crystal.
         
@@ -211,7 +213,7 @@ class ThermoOptic:
         """
         
         # Ensure that a heat load, boundary conditions, & evaluation points have been set
-        if (!self.heat_load | !self.boundary | !self.eval_points):
+        if (not self.heat_load) | (not self.boundary) | (not self.eval_points):
             raise RuntimeError("must set heat load, boundary conditions, & evaluation points prior to simulation")
         
         # Set FEniCS log & define shortnames for useful quantities
@@ -229,10 +231,12 @@ class ThermoOptic:
         Ts = [T(pt) for pt in self.eval_points]
         
         # Return temperature field, saving if requested
-        if save: npsave(save_path, Ts)
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset(data=Ts)
         return Ts
     
-    def gaussian_solution(self):
+    def gaussian_solution(self, save=False, path="./T-crystal.h5"):
         u"""
         Computes a solution to the steady state heat equation given a Gaussian heat load
         
@@ -252,9 +256,14 @@ class ThermoOptic:
         zs = self.eval_pts[:,2]
         rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
         Ts = Pth/(4*pi*Kc)*alpha*exp(-alpha*(zs+L/2.))*(2*log(r0/rs)+expi(2*(r0/wp)**2)+expi(2*(rs/wp)**2))
+        
+        # Return temperature field, saving if requested
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset(data=Ts)
         return Ts
         
-    def hog_solution(self):
+    def hog_solution(self, save=False, path="./T-crystal.h5"):
         u"""
         Computes a solution to the steady state heat equation given a higher-order Gaussian heat load
         
@@ -279,9 +288,14 @@ class ThermoOptic:
         zs = self.eval_pts[:,2]
         rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
         Ts = dT*exp(-2.*(rs/wp)**order)*exp(-alpha*(zs+L/2.))
+        
+        # Return temperature field, saving if requested
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset(data=Ts)
         return Ts
     
-    def tophat_solution(self):
+    def tophat_solution(self, save=False, path="./T-crystal.h5"):
         u"""
         Computes a solution to the steady state heat equation given a tophat heat load 
         
@@ -304,9 +318,14 @@ class ThermoOptic:
         Ts = Pth/(4*pi*Kc)*alpha*exp(-alpha*(zs+L/2.))/(1-exp(-alpha*L))
         Ts[rs<=wp] *= 2*log(r0/wp)+1-(r/wp)**2
         Ts[rs>wp] *= 2*log(r0/r)
+        
+        # Return temperature field, saving if requested
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset(data=Ts)
         return Ts
                              
-    def compute_indices(self, Ts, material="Ti:Al2O3", fit_width=None):
+    def compute_indices(self, Ts, material="Ti:Al2O3", fit_width=None, save=False, path="./n-crystal.h5"):
         u"""
         Computes indices of refraction based on material & temperature
         
@@ -340,12 +359,19 @@ class ThermoOptic:
             nFit[z,1,:] = diag(varfit)
             
         # Return index values according to pumping direction
-        if self.crystal.pump_type == "left":
-            return nTrz, nFit
-        elif self.crystal.pump_type == "right":
-            return nTrz[::-1], nFit[::-1]
+        if self.crystal.pump_type == "right":
+            nTrz = nTrz[::-1]
+            nFit = nFit[::-1]
         elif self.params.pop_inversion_pump_type == "dual":
-            return (nTrz+nTrz[::-1])/2., (nFit+nFit[::-1])/2.
+            nTrz = (nTrz+nTrz[::-1])/2.
+            nFit = (nFit+nFit[::-1])/2.
+        
+        # Return indices, saving if requested
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset("nTrz", data=Ts)
+                h5File.create_dataset("nFit", data=Ts)
+        return nTrz, nFit
         
         '''
         # fix negative n2 vals and ****divide through by 2 based on Gaussian duct definition n(r) = n0 - 1/2*n2*r^2**** - see rp-photonics.com
@@ -369,7 +395,7 @@ class ThermoOptic:
                 s.n2 = n2_output[s.slice_index]
         '''
                              
-    def compute_ABCD(self, ns):
+    def compute_ABCD(self, ns, save=False, path="./ABCD-crystal.h5"):
         u"""
         Computes ABCD matrices for each longitudinal eval point in the crystal
         
@@ -391,5 +417,10 @@ class ThermoOptic:
         # Compute total ABCD matrix
         full_ABCD = ABCD[::-1].prod(dim=0)
         
+        # Return ABCD matrices, saving if requested
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset("ABCDs", data=ABCDs)
+                h5File.create_dataset("full_ABCD", data=full_ABCD)
         return ABCDs, full_ABCD
     
