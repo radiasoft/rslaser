@@ -3,9 +3,13 @@
 
 from fenics import *
 from h5py import File
-from numpy import array, zeros, pi
-from scipy.special import gamma, expi
+from mpmath import hyp2f2
+from scipy.optimize import curve_fit
 from mshr import Cylinder, generate_mesh
+from scipy.special import gamma, gammainc as GammaI, exp1
+from numpy import array, zeros, pi, exp, log, unique, diag, argsort
+
+set_log_level(30)
 
 class ThermoOptic:
     u"""
@@ -20,13 +24,14 @@ class ThermoOptic:
     
     # C-style expressions defining heat load profiles & their input arguments for use by FEniCS
     #   - Gaussian expression is from Innocenzi et al (1990), doi:10.1063/1.103083
-    #   - Higher-order Gaussian ("HOG") expression is from Schmid, Graf, & Weber (2000), doi:10.1364/JOSAB.17.001398
+    #   - Higher-order Gaussian ("HOG") expression is from Cini & Mackenzie (2017), doi:10.1007/s00340-017-6848-y
+    #       ~ This paper also contains good information about Gaussian & Tophat profiles 
     #   - Tophat expression is from Chen et al (1997), doi:10.1109/3.605566
     
     PROFILES = {
-        "gaussian" : "dT*exp(-2*(x[0]*x[0]+x[1]*x[1])/(wp*wp))*exp(-alpha*(x[2]-z0))",
-        "hog" : "dT*exp(-pow((x[0]*x[0]+x[1]*x[1])/(2*wp*wp),Order))*exp(-alpha*(x[2]-z0))",
-        "tophat" : "(x[0]*x[0]+x[1]*x[1]<=wp)? dT*alpha*exp(-alpha*(x[2]-z0))/(1-exp(2*alpha*z0)) : 0",
+        "gaussian" : "Q0*exp(-2*(x[0]*x[0]+x[1]*x[1])/(wp*wp))*exp(-alpha*(x[2]-z0))",
+        "hog" : "Q0*exp(-2*pow((x[0]*x[0]+x[1]*x[1])/(wp*wp),P/2.))*exp(-alpha*(x[2]-z0))",
+        "tophat" : "(x[0]*x[0]+x[1]*x[1]<=wp)? Q0*exp(-alpha*(x[2]-z0)) : 0",
     }
 
     # Expressions for wavelength- & temperature-dependent indices of refraction
@@ -35,23 +40,23 @@ class ThermoOptic:
     #   - nT expression for NdYAG are from Brown (1998), doi:10.1109/3.736113
     
     INDICES = {
-        "Al2O3" : lambda T: 1.75991 + 1.28e-5*T + 3.1e-9*T**2,
+        "Ti:Al2O3" : lambda T: 1.75991 + 1.28e-5*T + 3.1e-9*T**2,
         "NdYAG": lambda T: 1.82 + (-2.59e-6+2.61e-8*T+6.02e-11*T**2)*T,
     }
     
     # Boundary condition types
-    BCTYPES = {"dirichlet": DirichletBC, }
+    BCTYPES = {"dirichlet": DirichletBC,}
     
-    __slots__ = ("mesh", "space", "crystal", "heat_load", "boundary", "eval_points")
+    __slots__ = ("mesh", "space", "crystal", "heat_load", "boundary", "eval_pts")
     
-    def __init__(self, crystal, mesh_density=25):
+    def __init__(self, crystal, mesh_density=50):
         
         # Attempt to generate Crystal mesh, & solution space
         try:
             self.crystal = crystal
-            L = self.crystal.length
-            r = self.crystal.radius
-            self.mesh = generate_mesh(Cylinder(Point(0.,0.,L/2.), Point(0.,0.,-L/2.), r, r), mesh_density)
+            L = self.crystal.length*1.e2
+            r0 = self.crystal.radius*1.e2
+            self.mesh = generate_mesh(Cylinder(Point(0.,0.,L/2.), Point(0.,0.,-L/2.), r0, r0), mesh_density)
             self.space = FunctionSpace(self.mesh, 'P', 1)
         except Exception as e:
             raise RuntimeError("Unable to generate Crystal mesh, received error:\n\t-> {:s}".format(str(e)))
@@ -59,11 +64,13 @@ class ThermoOptic:
         # Initialize attributes for heat load, boundary conditions, & evaluation points
         self.heat_load = None
         self.boundary = None
-        self.eval_points = array([0., 0., -L/2.])
+        self.eval_pts = array([])
         
     def set_load(self, heat_load):
         u"""
         Sets the heat load profile
+        
+        Volume integrals given in Eqns. 10, 17, & 26 of Cini & Mackenzie (2017), doi:10.1007/s00340-017-6848-y
         
         Args:
         * `heat_load`- str designating a heat load profile or a FEniCS Expression/UserExpression
@@ -75,31 +82,47 @@ class ThermoOptic:
         elif isinstance(heat_load, (Expression, UserExpression)):
             self.heat_load = heat_load
             return
-        elif profile.lower() not in self.PROFILES:
+        elif heat_load.lower() not in self.PROFILES:
             raise ValueError("\'heat_load\' (str) must be one of: {:s}".format(", ".join(self.PROFILES)))
-        
+            
         # Define shortnames for useful quantities
-        Kc = self.crystal.Kc
-        L = self.crystal.length
-        alpha = self.crystal.alpha
-        wp = self.crystal.pump_waist
+        Kc = self.crystal.Kc/1.e2
+        L = self.crystal.length*1.e2
+        r0 = self.crystal.radius*1.e2
+        alpha = self.crystal.alpha/1.e2
+        wp = self.crystal.pump_waist*1.e2
         Pabs = self.crystal.pump_energy*self.crystal.pump_rate
-
-        # Define & compute heat load parameters
-        heat_params = {"wp":wp, "alpha":alpha, "z0":-L/2.}
-        Pth = Pabs*abs(1.-crystal.lambda_pump/crystal.lambda_seed)
-        if profile in ("uniform", "tophat"):
-            Vol = pi*wp**2*(1.-exp(-alpha*L))/alpha
-        elif profile=="gaussian":
-            Vol = 0.5*pi*wp**2*(1.-exp(-alpha*L))/alpha
-        elif profile=="hog":
-            order = self.crystal.pump_order
-            heat_params["Order"] = order
-            Gint = 2.**(1.-2./order)*wp**2.*gamma(2./order)/order
-            Vol = pi*Gint*(1.-exp(-alpha*L))/alpha
-        heat_params["dT"] = Pth/(Vol*Kc)
         
-        self.heat_load = Expression(self.PROFILES[heat_load], degree=1, **heat_params)
+        # Define parameters related to crystal & pump parameters
+        heat_params = {"wp":wp, "alpha":alpha, "z0":-L/2.}
+        
+        # Compute fractional thermal load & absorption efficiency
+        etah = abs(1.-self.crystal.lambda_pump/self.crystal.lambda_seed)
+        etaAbs = 1.-exp(-alpha*L)
+        
+        # Compute pumping volume & heat load constant
+        if heat_load=="tophat":
+            Vol = pi*wp**2*etaAbs/alpha
+            
+        elif heat_load=="gaussian":
+            Vol = 0.5*pi*wp**2*(1-exp(-2*(r0/wp)**2))*etaAbs/alpha
+            
+        elif heat_load=="hog":
+            order = self.crystal.pump_gorder
+            heat_params["P"] = order
+            Gams = (GammaI(2/order, 0)-GammaI(2/order, 2*(r0/wp)**order))
+            Vol = (2*pi*wp**2/order)*4**(-1/order)*Gams*etaAbs/alpha
+            
+        heat_params["Q0"] = etah*Pabs/Vol
+        
+        # Handling different cases for the pump type, set heat load expression
+        if self.crystal.pump_type=="right":
+            hl_expr = self.PROFILES[heat_load].replace("x[2]-z0", "-x[2]-z0")
+        elif self.crystal.pump_type=="dual":
+            hl_expr = self.PROFILES[heat_load].replace("x[2]-z0", "abs(x[2])-z0")
+        else:
+            hl_expr = self.PROFILES[heat_load]
+        self.heat_load = Expression(hl_expr, degree=1, **heat_params)
         
     def set_boundary(self, bc_tol, bc_type="dirichlet"):
         u"""
@@ -131,20 +154,24 @@ class ThermoOptic:
         # Validate choice of evaluation point numbers & edge
         if (not isinstance(npts, (tuple, list))) | (len(npts)!=3):
             raise ValueError("\'npts\' must be a list or tuple of 3 integers")
-        if edge<=0 | edge>1:
+        if (edge<=0) | (edge>1):
             raise ValueError("\'edge\' must be a number in the range (0, 1]")
         nr, nw, nz = npts
         if not (nr or nz):
             raise ValueError("number of points along either radial or longitudinal axis must be non-zero")
+        
+        # Define shortnames for useful quantities
+        L = self.crystal.length*1.e2
+        r0 = self.crystal.radius*1.e2
 
         # Construct cylindrical grid of evaluation points
-        rs = edge*r*array(range(1,nx+1))/nx
-        zs = edge*(-L/2.+L*array(range(nz)))/nz
+        rs = edge*r0*array(range(1,nr+1))/(nr-1)
+        zs = edge*(-L/2.+L*array(range(nz))/(nz-1))
         if nw:
             ws = 2.*pi*array(range(nw))/nw
-            self.eval_points = array([[[0.,0.,z]]+[[r*cos(om),r*sin(om),z] for r in rs for om in ws] for z in zs]).reshape((nz*(nw*nr+1),3))
+            self.eval_pts = array([[[0.,0.,z]]+[[r*cos(om),r*sin(om),z] for r in rs for om in ws] for z in zs]).reshape((nz*(nw*nr+1),3))
         else:
-            self.eval_points = array([[[0.,0.,z]]+[[r,0.,z] for r in rs] for z in zs]).reshape((nz*(nr+1),3))
+            self.eval_pts = array([[[0.,0.,z]]+[[r,0.,z] for r in rs] for z in zs]).reshape((nz*(nr+1),3))
                             
     def solve_time(self, runtime, dt=1e-3, load_off=None, save=False, path="./T-crystal.h5"):
         u"""
@@ -154,7 +181,7 @@ class ThermoOptic:
         """
         
         # Ensure that a heat load, boundary conditions, & evaluation points have been set
-        if (not self.heat_load) | (not self.boundary) | (not self.eval_points):
+        if (not self.heat_load) | (not self.boundary) | (not self.eval_pts.size):
             raise RuntimeError("must set heat load, boundary conditions, & evaluation points prior to simulation")
         
         # Set FEniCS log & define shortnames for useful quantities
@@ -164,12 +191,12 @@ class ThermoOptic:
 
         # Define time parameters & create output temperature array
         Nt = int(runtime/dt)+1
-        npts = self.eval_points.shape[0]
+        npts = self.eval_pts.shape[0]
         Ts = zeros((Nt, npts))
         
         # Set initial temperature state
         T = interpolate(self.crystal.Tc, self.space)
-        Ts[0,:] = [T(pt) for pt in self.eval_points]
+        Ts[0,:] = [T(pt) for pt in self.eval_pts]
             
         # Initialize variational variables used by FEniCS
         u = TrialFunction(self.space)
@@ -188,7 +215,7 @@ class ThermoOptic:
         for n in range(1,load_off):
             solve(Fl==Fr, T_solve, self.boundary)
             T.assign(T_solve)
-            Ts[n,:] = [T(pt) for pt in self.eval_points]
+            Ts[n,:] = [T(pt) for pt in self.eval_pts]
         
         # Solve the differential equation without thermal loading for remaining steps (if any) 
         if load_off<Nt:
@@ -197,7 +224,18 @@ class ThermoOptic:
             for n in range(load_off, Nt):
                 solve(Fl==Fr, T_solve, self.boundary)
                 T.assign(T_solve)
-                Ts[n,:] = [T(pt) for pt in self.eval_points]
+                Ts[n,:] = [T(pt) for pt in self.eval_pts]
+                
+        # Rotate the temperature results if pumping from the right
+        if self.crystal.pump_type == "right":
+            Ts = self._rotate_results(Ts)
+            
+        # Add the temperature results if dual-pumping
+        # TODO: Fix this so that dual-pumping is handled with an extra source term
+        #     - Note: the other source term should vary like exp(-alpha*(z+z0)
+        elif self.crystal.pump_type == "dual":
+            zorder = argsort(self.eval_pts[:,2])
+            Ts = Ts+Ts[zorder[::-1]]
         
         # Return temperature field, saving if requested
         if save: 
@@ -213,7 +251,7 @@ class ThermoOptic:
         """
         
         # Ensure that a heat load, boundary conditions, & evaluation points have been set
-        if (not self.heat_load) | (not self.boundary) | (not self.eval_points):
+        if (not self.heat_load) | (not self.boundary) | (not self.eval_pts.size):
             raise RuntimeError("must set heat load, boundary conditions, & evaluation points prior to simulation")
         
         # Set FEniCS log & define shortnames for useful quantities
@@ -228,66 +266,18 @@ class ThermoOptic:
         # Define time-independent differential equation for temperature
         F = dot(grad(u),grad(v))*dx - f*v*dx
         solve(F==0.0, T, self.boundary)
-        Ts = [T(pt) for pt in self.eval_points]
+        Ts = [T(pt) for pt in self.eval_pts]
         
-        # Return temperature field, saving if requested
-        if save: 
-            with File(path, "w") as h5File:
-                h5File.create_dataset(data=Ts)
-        return Ts
-    
-    def gaussian_solution(self, save=False, path="./T-crystal.h5"):
-        u"""
-        Computes a solution to the steady state heat equation given a Gaussian heat load
-        
-        Given in Eqn. 7 of Innocenzi et al (1990), doi:10.1063/1.103083
-        """
-        
-        # Define shortnames for useful quantities
-        Kc = self.crystal.Kc
-        L = self.crystal.length
-        r0 = self.crystal.radius
-        alpha = self.crystal.alpha
-        wp = self.crystal.pump_waist
-        Pabs = self.crystal.pump_energy*self.crystal.pump_rate
-        Pth = Pabs*abs(1.-crystal.lambda_pump/crystal.lambda_seed)
-
-        # Evaluate the steady state solution for Gaussian heat load at all evaluation points
-        zs = self.eval_pts[:,2]
-        rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
-        Ts = Pth/(4*pi*Kc)*alpha*exp(-alpha*(zs+L/2.))*(2*log(r0/rs)+expi(2*(r0/wp)**2)+expi(2*(rs/wp)**2))
-        
-        # Return temperature field, saving if requested
-        if save: 
-            with File(path, "w") as h5File:
-                h5File.create_dataset(data=Ts)
-        return Ts
-        
-    def hog_solution(self, save=False, path="./T-crystal.h5"):
-        u"""
-        Computes a solution to the steady state heat equation given a higher-order Gaussian heat load
-        
-        Given in Eqn. ? of Schmid (2000), doi:10.1364/JOSAB.17.001398
-        """
-        
-        # Define shortnames for useful quantities
-        Kc = self.crystal.Kc
-        L = self.crystal.length
-        r0 = self.crystal.radius
-        alpha = self.crystal.alpha
-        wp = self.crystal.pump_waist
-        Pabs = self.crystal.pump_energy*self.crystal.pump_rate
-        Pth = Pabs*abs(1.-crystal.lambda_pump/crystal.lambda_seed)
-        
-        # Compute steady state temperature change at crystal face
-        Gint = 2.**(1.-2./order)*wp**2.*gamma(2./order)/order
-        Vol = pi*Gint*(1.-exp(-alpha*L))/alpha
-        dT = Pth/(Vol * Kc)
-        
-        # Evaluate the steady state solution for uniform heat load at all evaluation points
-        zs = self.eval_pts[:,2]
-        rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
-        Ts = dT*exp(-2.*(rs/wp)**order)*exp(-alpha*(zs+L/2.))
+        # Rotate the temperature results if pumping from the right
+        if self.crystal.pump_type == "right":
+            Ts = self._rotate_results(Ts)
+            
+        # Add the temperature results if dual-pumping
+        # TODO: Fix this so that dual-pumping is handled with an extra source term
+        #     - Note: the other source term should vary like exp(-alpha*(z+z0)
+        elif self.crystal.pump_type == "dual":
+            zorder = argsort(self.eval_pts[:,2])
+            Ts = Ts+Ts[zorder[::-1]]
         
         # Return temperature field, saving if requested
         if save: 
@@ -304,26 +294,117 @@ class ThermoOptic:
         """
         
         # Define shortnames for useful quantities
-        Kc = self.crystal.Kc
-        L = self.crystal.length
-        r0 = self.crystal.radius
-        alpha = self.crystal.alpha
-        order = self.crystal.pump_order
+        Kc = self.crystal.Kc/1.e2
+        L = self.crystal.length*1.e2
+        r0 = self.crystal.radius*1.e2
+        alpha = self.crystal.alpha/1.e2
+        wp = self.crystal.pump_waist*1.e2
         Pabs = self.crystal.pump_energy*self.crystal.pump_rate
-        Pth = Pabs*abs(1.-crystal.lambda_pump/crystal.lambda_seed)
-
-        # Evaluate the steady state solution for uniform heat load at all evaluation points
+        z0 = -L/2.
+        
+        # Compute fractional thermal load & absorption efficiency
+        etah = abs(1.-self.crystal.lambda_pump/self.crystal.lambda_seed)
+        etaAbs = 1.-exp(-alpha*L)
+        
+        # Extract radial & axial values for all evaluation points
         zs = self.eval_pts[:,2]
         rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
-        Ts = Pth/(4*pi*Kc)*alpha*exp(-alpha*(zs+L/2.))/(1-exp(-alpha*L))
-        Ts[rs<=wp] *= 2*log(r0/wp)+1-(r/wp)**2
-        Ts[rs>wp] *= 2*log(r0/r)
+        if self.crystal.pump_type=="right":
+            zs *= -1
+        elif self.crystal.pump_type == "dual":
+            zs = -abs(zs)
+        
+        # Evaluate the analytical steady state solution for a tophat heat load
+        Trz = etah*(Pabs/etaAbs)*alpha/(4*pi*Kc)*exp(-alpha*(zs-z0))
+        Trz[rs<=wp] *= 2*log(r0/wp)+1-(rs[rs<=wp]/wp)**2
+        Trz[rs>wp] *= 2*log(r0/rs[rs>wp])
         
         # Return temperature field, saving if requested
         if save: 
             with File(path, "w") as h5File:
                 h5File.create_dataset(data=Ts)
-        return Ts
+        return Trz
+    
+    def gaussian_solution(self, save=False, path="./T-crystal.h5"):
+        u"""
+        Computes a solution to the steady state heat equation given a Gaussian heat load
+        
+        Given in Eqn. 7 of Innocenzi et al (1990), doi:10.1063/1.103083
+        """
+        
+        # Define shortnames for useful quantities
+        Kc = self.crystal.Kc/1.e2
+        L = self.crystal.length*1.e2
+        r0 = self.crystal.radius*1.e2
+        alpha = self.crystal.alpha/1.e2
+        wp = self.crystal.pump_waist*1.e2
+        Pabs = self.crystal.pump_energy*self.crystal.pump_rate
+        z0 = -L/2. if self.crystal.pump_type!="right" else L/2
+        
+        # Compute fractional thermal load & absorption efficiency
+        etah = abs(1.-self.crystal.lambda_pump/self.crystal.lambda_seed)
+        etaAbs = 1.-exp(-alpha*L)
+        
+        # Extract radial & axial values for all evaluation points
+        zs = self.eval_pts[:,2]
+        rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
+        rs[rs==0] = 1e-6 # Prevents a divide by zero error in the log term below
+        if self.crystal.pump_type=="right":
+            zs *= -1
+        elif self.crystal.pump_type == "dual":
+            zs = -abs(zs)
+        
+        # Evaluate the analytical steady state solution for a Gaussian heat load
+        Trz = etah*(Pabs/etaAbs)*alpha/(4*pi*Kc)*exp(-alpha*(zs-z0))
+        Trz *= (log((r0/rs)**2)+exp1(2*(r0/wp)**2)-exp1(2*(rs/wp)**2))
+        
+        # Return temperature field, saving if requested
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset(data=Trz)
+        return Trz
+        
+    def hog_solution(self, save=False, path="./T-crystal.h5"):
+        u"""
+        Computes a solution to the steady state heat equation given a higher-order Gaussian heat load
+        
+        Given in Eqn. 28 of Cini & Mackenzie (2017), doi:10.1007/s00340-017-6848-y
+        """
+        
+        # Define shortnames for useful quantities
+        Kc = self.crystal.Kc/1.e2
+        L = self.crystal.length*1.e2
+        r0 = self.crystal.radius*1.e2
+        alpha = self.crystal.alpha/1.e2
+        order = self.crystal.pump_gorder
+        wp = self.crystal.pump_waist*1.e2
+        Pabs = self.crystal.pump_energy*self.crystal.pump_rate
+        z0 = -L/2. if self.crystal.pump_type!="right" else L/2
+        
+        # Compute fractional thermal load & absorption efficiency
+        etah = abs(1.-self.crystal.lambda_pump/self.crystal.lambda_seed)
+        etaAbs = 1.-exp(-alpha*L)
+        
+        # Extract radial & axial values for all evaluation points
+        zs = self.eval_pts[:,2]
+        rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
+        if self.crystal.pump_type=="right":
+            zs *= -1            
+        elif self.crystal.pump_type == "dual":
+            zs = -abs(zs)
+        
+        # Evaluate the analytical steady state solution for a Gaussian heat load
+        a = 2./order
+        hyp1 = r0**2*float(hyp2f2(a, a, a+1, a+1, -2*(r0/wp)**order))
+        hyp2 = array([r**2*float(hyp2f2(a, a, a+1, a+1, -2*(r/wp)**order)) for r in rs])
+        Trz = etah*(Pabs/etaAbs)*alpha/(4*pi*Kc)*exp(-alpha*(zs-z0))*(hyp1-hyp2)
+        Trz *= 2.**(a-1.)*order/(gamma(a)*wp**2)
+                
+        # Return temperature field, saving if requested
+        if save: 
+            with File(path, "w") as h5File:
+                h5File.create_dataset(data=Trz)
+        return Trz
                              
     def compute_indices(self, Ts, material="Ti:Al2O3", fit_width=None, save=False, path="./n-crystal.h5"):
         u"""
@@ -337,63 +418,28 @@ class ThermoOptic:
         
         # Use default fit_width relative to pump waist if none given
         if not fit_width:
-            fit_width = .5*self.crystal.pump_waist
-        
-        # Define temperature dependent index & fitting functions
-        nfun = self.INDICES[material]
-        quad_fit = lambda x, A, B: -0.5*A * x**2.0 + B
+            fit_width = .5*(self.crystal.pump_waist*1.e2)
         
         # Define short names for useful quantities
-        zs = self.eval_pts[:,2]
+        zs = unique(self.eval_pts[:,2])
         rs = (self.eval_pts[:,0]**2+self.eval_pts[:,1]**2)**.5
-        in_fit = abs(rs)<=fit_width
-        Trwz = Ts.reshape(Ts.shape, order='F')
+        npts = len(self.eval_pts)
         
         # Compute analytical & quadratic fit index values
-        nTrz = zeros((len(zs), len(rs)))
+        nT = self.INDICES[material](Ts)
         nFit = zeros((len(zs), 2, 2))
-        for z in range(nz):
-            nTrz[z] = array([nfun(T) for T in Trz[:,z]])
-            pfit, varfit = curve_fit(quad_fit, rs[in_fit], nTrz[z,in_fit], 2, cov=True)
+        for z in range(len(zs)):
+            in_fit = (self.eval_pts[:,2]==zs[z])*(abs(rs)<=fit_width)
+            pfit, varfit = curve_fit(lambda r, n0, n2: n0-0.5*n2*r**2.0, rs[in_fit], nT[in_fit])
             nFit[z,0,:] = pfit
             nFit[z,1,:] = diag(varfit)
-            
-        # Return index values according to pumping direction
-        if self.crystal.pump_type == "right":
-            nTrz = nTrz[::-1]
-            nFit = nFit[::-1]
-        elif self.params.pop_inversion_pump_type == "dual":
-            nTrz = (nTrz+nTrz[::-1])/2.
-            nFit = (nFit+nFit[::-1])/2.
         
         # Return indices, saving if requested
         if save: 
             with File(path, "w") as h5File:
-                h5File.create_dataset("nTrz", data=Ts)
-                h5File.create_dataset("nFit", data=Ts)
-        return nTrz, nFit
-        
-        '''
-        # fix negative n2 vals and ****divide through by 2 based on Gaussian duct definition n(r) = n0 - 1/2*n2*r^2**** - see rp-photonics.com
-        n2_full_array = np.multiply(n2_full_array, -2.0)
-        n2_full_array = np.multiply(n2_full_array, 1.0e4)
-
-        # Look at why n2 goes negative...
-        n2_full_array[n2_full_array <= 0.0] = 1.0e-6
-        
-        z_full_array = np.linspace(0.0, self.length, len(n0_full_array))
-        n0_fit = splrep(z_full_array, n0_full_array)
-        n2_fit = splrep(z_full_array, n2_full_array)
-
-        z_crystal_slice = (self.length / self.nslice) * (np.arange(self.nslice) + 0.5)
-        n0_slice_array = splev(z_crystal_slice, n0_fit)
-        n2_slice_array = splev(z_crystal_slice, n2_fit)
-
-        if set_n:
-            for s in self.slice:
-                s.n0 = n0_output[s.slice_index]
-                s.n2 = n2_output[s.slice_index]
-        '''
+                h5File.create_dataset("nT", data=nT)
+                h5File.create_dataset("nFit", data=nFit)
+        return nT, nFit
                              
     def compute_ABCD(self, ns, save=False, path="./ABCD-crystal.h5"):
         u"""
@@ -404,18 +450,20 @@ class ThermoOptic:
         """
         
         # Define shortnames for useful quantities
-        nz = len(self.eval_pts[:,2])
-        dz = self.crystal.length/nz
+        nz = len(set(self.eval_pts[:,2]))
+        dz = self.crystal.length*1.e2/nz
         
         # Compute ABCD matrices at each longitudinal point
         ABCDs = zeros((nz, 2, 2))+0j
         for z in range(nz):
-            n2, n0 = ns[z,0]
+            n0, n2 = ns[z,0]
             gamma = (n2/n0+0j)**.5
             ABCDs[z] = [[cos(gamma*dz), sin(gamma*dz)/(n0*gamma)],[-n0*gamma*sin(gamma*dz), cos(gamma*dz)]]
             
         # Compute total ABCD matrix
-        full_ABCD = ABCD[::-1].prod(dim=0)
+        full_ABCD = ABCDs[-1].copy()
+        for ABCD in ABCDs[-2::-1]:
+            full_ABCD = full_ABCD@ABCD
         
         # Return ABCD matrices, saving if requested
         if save: 

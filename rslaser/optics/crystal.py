@@ -31,8 +31,8 @@ _CRYSTAL_DEFAULTS = PKDict(
     delta_n_array=None,
     delta_n=None,
     delta_n_mesh_extent=0.01,  # range [m] of delta_n mesh assuming azimuthal symmetry
-    length=0.2,
-    radius=0.01 # [m], crystal radius
+    length=0.2, # [m], crystal length
+    radius=0.01, # [m], crystal radius
     l_scale=1,
     nslice=_N_SLICE_DEFAULT,
     slice_index=0,
@@ -43,16 +43,16 @@ _CRYSTAL_DEFAULTS = PKDict(
     radial_n2_factor=1.3,
     alpha=120., # [1/m], absorption coefficient for Al2O3    
     rho= 3980., # [kg/m^3], density for Al2O3
-    Kc= 33., # [W/m K], thermal conductivity for Al203
-    cp= 756., # [J/kg K], specific heat capacity (constant pressure) for Al203
-    Tc= 0., # [C], coolant (or ambient) temperature outside the crystal
-    lambda_seed = 800. # [Å], seed wavelength for thermo-optic coupling factor
-    lambda_pump = 532. # [Å], pump laser operating wavelength
+    Kc = 33., # [W/m K], thermal conductivity for Al203
+    cp = 756., # [J/kg K], specific heat capacity (constant pressure) for Al203
+    Tc = 0., # [C], coolant (or ambient) temperature outside the crystal
+    lambda_seed = 800., # [nm], seed wavelength for thermo-optic coupling factor
+    lambda_pump = 532., # [nm], pump laser operating wavelength
     pump_waist = 0.00164, # [m] pump laser waist
     pump_energy = 0.0211, # [J], pump laser energy onto the crystal
     pump_type = "dual", # pumping type, one of: "left", "right", or "dual"
     pump_profile = "hog", # pump profile, one of: "uniform", "gaussian", "hog", or "tophat"
-    pump_order = 2., # Gaussian order of the pump profile, used for "hog" profile only
+    pump_gorder = 2., # Gaussian order of the pump profile, used for "hog" profile only
     pump_offset_x = 0.0, # [m], horizontal offset of pump laser center from crystal center
     pump_offset_y = 0.0, # [m], veritcal offset of pump laser center from crystal center
     pump_rate = 1.0e3, # [s^-1], repetition rate of the pump laser
@@ -75,18 +75,16 @@ class Crystal(Element):
     _INPUT_ERROR = ElementException
 
     def __init__(self, params=None):
+        
+        # Validate & set input parameters
         params = self._get_params(params)
         self._validate_params(params)
-        self.params = params
+        for p, param in params.items():
+            setattr(self, p, param)
 
         # Check if n2<0, throw an exception if true
         if (np.array(params.n2) < 0.0).any():
             raise self._INPUT_ERROR(f"You've specified negative value(s) for n2")
-
-        self.length = params.length
-        self.radius = params.radius
-        self.nslice = params.nslice
-        self.l_scale = params.l_scale
         self.slice = []
 
         for j in range(self.nslice):
@@ -191,67 +189,49 @@ class Crystal(Element):
         laser_pulse.flatten_phase_edges()
         return laser_pulse
 
-    def calc_n0n2(self, set_n=False, mesh_density=80, method="fenics"):
+    def calc_n0n2(self, set_n=False, mesh_density=50, method="analytical", heat_load="gaussian"):
         # mesh_density [int]: value ≥ 120 will produce more accurate results; slower, but closer to numerical conversion
         
         # Validate choice of solution method
         method = method.lower()
         if method not in ("fenics", "analytical"):
-            raise ValueError("\'method\' must be one of: fenics, analytical")
+            raise ValueError("\'method\' must be either \'fenics\' or \'analytical\'")
         
         # Initialize a thermo-optic simulator object
         TO_Sim = ThermoOptic(self, mesh_density)
                 
         # Set evaluation points for thermo-optic calculations
-        n_radpts = 201  # no. of radial points at which to extract data
-        n_longpts = 201  # no. of longitudinal points at which to extract data
+        n_radpts = 100  # no. of radial points at which to extract data
+        n_longpts = self.nslice  # no. of longitudinal points at which to extract data
         TO_Sim.set_points((n_radpts, 0, n_longpts))
         
         # For high rep-rates, solve steady-state heat equation
-        if (method=="fenics") and (self.pump_rate==1.0e3):
+        if (method=="fenics"):
             
             # Set boundary values for thermo-optic simulations
             bc_tol = 2.*self.radius*(self.radius/40.0)  # 2 * rad * delta(rad)
             TO_Sim.set_boundary(bc_tol)
             
             # Set thermal load & carry out thermo-optic simulation
-            TO_Sim.set_load("hog")
+            TO_Sim.set_load(heat_load)
             Trz = TO_Sim.solve_steady()
             
-        # For low rep-rates, compute steady state solution
-        elif (method=="fenics") and (self.pump_rate==1.):
-            Trz = TO_Sim.hog_solution()
-            
-        # Raise an error for invalid combinations of rep-rate and method
-        elif method=="fenics":
-            raise RuntimeError("No solution method for a rep-rate of {:.3f}".format(self.pump_rate))
-            
         # For analytical solutions, compute Innocenzi solution
-        else:
-            Trz = TO_Sim.gaussian_solution()
-        
-        # Average temperature profile over longitudinal slices
-        nslices = 180  # no. of longitudinal slices
-        dz = self.length/nslices
-        Tslice = zeros(nslices)
-        for n in range(nslices):
-            zl, zr = -self.length/2.+dz*array([n, n+1])
-            slice_pts = T0_Sim.eval_points[(TO_Sim.eval_points[:,2]>=zl)*(TO_Sim.eval_points[:,2]<zr)]
-            Tslice[n] = Trz[slice_pts].mean()
-        TO_Sim.set_points((n_radpts, 0, nslices))
+        elif method=="analytical":
+            TO_Sim.set_load(heat_load)
+            Trz = getattr(TO_Sim, heat_load+"_solution")()
         
         # Compute indices of refraction & ABCD matrices for each slice
-        nT, nFit = TO_Sim.compute_indices(Tslice)
+        nT, nFit = TO_Sim.compute_indices(Trz)
         ABCDs, full_ABCD = TO_Sim.compute_ABCD(nFit)
 
         # Set n0/n2 values for crystal slices if desired
         if set_n:
             for s in self.slice:
-                s.n0 = nFit[s.slice_index, 0, 1]
-                s.n2 = nFit[s.slice_index, 0, 0]
+                s.n0 = nFit[s.slice_index, 0, 0]
+                s.n2 = nFit[s.slice_index, 0, 1]
 
-        return nFit[:,0,1], nFit[:,0,0], full_ABCD
-
+        return nFit[:,0,0], nFit[:,0,1], full_ABCD
 
 class CrystalSlice(Element):
     """
@@ -275,13 +255,21 @@ class CrystalSlice(Element):
     _INPUT_ERROR = ElementException
 
     def __init__(self, params=None):
+        
+        # Validate & set input parameters
         params = self._get_params(params)
         self._validate_params(params)
+        for p, param in params.items():
+            setattr(self, p, param)
+        
+        '''
         self.length = params.length
+        self.radius = params.radius
         self.nslice = params.nslice
         self.slice_index = params.slice_index
         self.n0 = params.n0
         self.n2 = params.n2
+        self.alpha = params.alpha
         self.delta_n = params.delta_n
         self.l_scale = params.l_scale
         # self.pop_inv = params._pop_inv
@@ -290,6 +278,16 @@ class CrystalSlice(Element):
         self.C = params.C
         self.D = params.D
         self.radial_n2_factor = params.radial_n2_factor
+        self.lambda_pump = params.lambda_pump
+        self.lambda_seed = params.lambda_seed
+        self.pump_type = params.pump_type
+        self.pump_gorder = params.pump_gorder
+        self.pump_waist = params.pump_waist
+        self.pump_energy = params.pump_energy
+        self.pump_offset_x = params.pump_offset_x
+        self.pump_offset_y = params.pump_offset_y
+        self.num_cells = params.num_cells
+        '''
 
         # Wavelength-dependent cross-section (P. F. Moulton, 1986)
         wavelength = np.array(
@@ -339,7 +337,7 @@ class CrystalSlice(Element):
             /(np.exp(-self.alpha*z)*self.length)
 
         # integrate super-gaussian
-        g_order = self.pump_order
+        g_order = self.pump_gorder
         integral_factor = (2 ** ((g_order - 2.0) / g_order) * gamma(2 / g_order)) / (
             g_order * (1 / (self.pump_waist**g_order)) ** (2.0 / g_order))
 
@@ -367,11 +365,10 @@ class CrystalSlice(Element):
         slice_end = z + (self.length / 2.0)
 
         # calculate correction factor for representing a gaussian pulse with a series of flat-top slices
-        correction_factor = ((np.exp(-self.alpha * slice_front)-np.exp(-self.alpha * slice_end))/ self.alpha)
-            / (np.exp(-self.alpha * z) * self.length)
+        correction_factor = ((np.exp(-self.alpha * slice_front)-np.exp(-self.alpha * slice_end))/ self.alpha)/ (np.exp(-self.alpha * z) * self.length)
 
         # integrate super-gaussian
-        g_order = self.pump_order
+        g_order = self.pump_gorder
         integral_factor = (2 ** ((g_order - 2.0) / g_order) * gamma(2 / g_order)) / (
             g_order*(1/(self.pump_waist**g_order)) ** (2.0 / g_order))
 
@@ -394,8 +391,8 @@ class CrystalSlice(Element):
 
     def _initialize_excited_states_mesh(self, params, nslice):
         x = np.linspace(
-            -self.mesh_extent,
-            self.mesh_extent,
+            -self.radius,
+            self.radius,
             self.num_cells,
         )
         xv, yv = np.meshgrid(x, x)
@@ -815,8 +812,8 @@ class CrystalSlice(Element):
             temp_array = np.copy(self.pop_inversion_mesh)
 
             a_x = np.linspace(
-                -self.mesh_extent,
-                self.mesh_extent,
+                -self.radius,
+                self.radius,
                 self.num_cells,
             )
             a_y = a_x
@@ -829,7 +826,7 @@ class CrystalSlice(Element):
 
             a_x = a.x
             a_y = a.y
-            b_x = np.linspace(-self.mesh_extent,self.mesh_extent,self.num_cells,)
+            b_x = np.linspace(-self.radius,self.radius,self.num_cells,)
             b_y = b_x
 
         if not (np.array_equal(a_x, b_x) and np.array_equal(a_y, b_y)):
