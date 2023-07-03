@@ -405,14 +405,14 @@ class CrystalSlice(Element):
 
             # calculate correction factor for representing a gaussian pulse with a series of flat-top slices
             correction_factor = (
-                (np.exp(-self.alpha * slice_front)- np.exp(-self.alpha * slice_end))/ self.alpha) / 
-                (np.exp(-self.alpha * z) * self.length
+                (np.exp(-self.alpha * slice_front)- np.exp(-self.alpha * slice_end))/ self.alpha)
+                / (np.exp(-self.alpha * z) * self.length
             )
 
             # integrate super-gaussian
             integral_factor = (
-                2 ** ((self.pump_gorder - 2.0) / self.pump_gorder) * gamma(2 / self.pump_gorder)) / 
-                (self.pump_gorder * (1 / (self.pump_waist**self.pump_gorder))** (2.0 / self.pump_gorder)
+                2 ** ((self.pump_gorder - 2.0) / self.pump_gorder) * gamma(2 / self.pump_gorder))
+                / (self.pump_gorder * (1 / (self.pump_waist**self.pump_gorder))** (2.0 / self.pump_gorder)
             )
             fraction_to_heating = 1. - self.lambda_pump/self.lambda_seed
 
