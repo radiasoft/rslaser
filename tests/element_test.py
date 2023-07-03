@@ -38,7 +38,6 @@ def test_crystal_nl_kick():
             photon_e_ev=1.23984198 / (799e-9 * 1e6),
             nslice=1,
             nx_slice=80,
-            ny_slice=80,
             pulseE=1.0e-6,
             tau_fwhm=(4 * numpy.pi * (1.64e-3 / 2) ** 2 / 799e-9) / constants.c * 2.355,
             sigx_waist=1.64e-3 / 2,
@@ -113,7 +112,6 @@ def test_prop_with_gain():
         p = pulse.LaserPulse(
             PKDict(
                 nx_slice=32,
-                ny_slice=32,
             )
         )
         c.propagate(p, prop_type, calc_gain=True)
@@ -130,24 +128,24 @@ def test_prop_with_gain():
 
 
 def test_instantiation03():
-    drift.Drift(0.01)
+    lens.Drift_srw(0.01)
 
 
 def test_propagation05():
-    d = drift.Drift(0.01)
+    d = lens.Drift_srw(0.01)
     p = pulse.LaserPulse()
     d.propagate(p)
-    trigger_prop_fail(drift.Drift(0.01).propagate, pulse.LaserPulse())
+    trigger_prop_fail(lens.Drift_srw(0.01).propagate, pulse.LaserPulse())
 
 
 def test_instantiation04():
-    lens.Lens(0.2)
+    lens.Lens_srw(0.2)
 
 
 def test_propagation06():
-    l = lens.Lens(0.2)
+    l = lens.Lens_srw(0.2)
     l.propagate(pulse.LaserPulse())
-    trigger_prop_fail(lens.Lens(0.01).propagate, pulse.LaserPulse())
+    trigger_prop_fail(lens.Lens_srw(0.01).propagate, pulse.LaserPulse())
 
 
 def trigger_prop_fail(prop_func, pulse):

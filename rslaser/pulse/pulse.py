@@ -31,22 +31,24 @@ import matplotlib.pyplot as plt
 _LASER_PULSE_DEFAULTS = PKDict(
     nslice=3,
     pulse_direction=0.0,  # 0 corresponds to 'right' or 'z' or 'forward', can be set to any angle relative
-    chirp=0,
     photon_e_ev=1.5,  # 1e3,
     num_sig_long=3.0,
     dist_waist=0,
-    tau_fwhm=0.1 / const.c / math.sqrt(2.0),
+    tau_fwhm=0.1 / const.c / math.sqrt(2.0),  # also tau_c: the chirped pulse length
+    tau_0=0.1
+    / const.c
+    / math.sqrt(2.0),  # Fourier-limited pulse length of a given spectral bandwidth
     pulseE=0.001,
     sigx_waist=1.0e-3,
     sigy_waist=1.0e-3,
     num_sig_trans=6,
     nx_slice=64,
-    ny_slice=64,
     poltype=1,
     mx=0,
     my=0,
     phase_flatten_cutoff=0.85,
 )
+
 _ENVELOPE_DEFAULTS = PKDict(
     w0=0.1,
     a0=0.01,
@@ -93,7 +95,6 @@ class LaserPulse(ValidatorBase):
                 sigx_waist (float): horizontal RMS waist size [m]
                 sigy_waist (float): vertical RMS waist size [m]
                 nx_slice (int): no. of horizontal mesh points in slice
-                ny_slice (int): no. of vertical mesh points in slice
                 num_sig_trans (int): no. of sigmas for transverse Gsn range
                 pulseE (float): maximum pulse energy for SRW Gaussian wavefronts [J]
                 poltype (int): polarization 1- lin. hor., 2- lin. vert., 3- lin. 45 deg., 4- lin.135 deg., 5- circ. right, 6- circ. left
@@ -134,8 +135,13 @@ class LaserPulse(ValidatorBase):
             units.calculate_lambda0_from_phE(params.photon_e_ev * const.e)
         )  # Function requires energy in J
         self.pulseE = params.pulseE
-        # self.photon_e -= 0.5*params.chirp           # so central slice has the central photon energy
-        # _de = params.chirp / self.nslice   # photon energy shift from slice to slice
+
+        assert (
+            params.tau_fwhm >= params.tau_0
+        ), "ERROR -- Invalid pulse length parameters provided"
+        # positive chirp parameter, b, where b^2 = (tau_c / tau_0)^2 - 1
+        self.initial_chirp = np.sqrt((params.tau_fwhm / params.tau_0) ** 2.0 - 1.0)
+
         for i in range(params.nslice):
             # add the slices; each (slowly) instantiates an SRW wavefront object
             self.slice.append(LaserPulseSlice(i, params.copy(), files=self.files))
@@ -520,24 +526,8 @@ class LaserPulse(ValidatorBase):
         for laser_index_i in np.arange(self.nslice):
             thisSlice = self.slice[laser_index_i]
 
-            # Extract horizontal component of electric field
-            re0_ex, re0_mesh_ex = srwutil.calc_int_from_wfr(
-                thisSlice.wfr, _pol=0, _int_type=5, _det=None, _fname="", _pr=False
-            )
-            im0_ex, im0_mesh_ex = srwutil.calc_int_from_wfr(
-                thisSlice.wfr, _pol=0, _int_type=6, _det=None, _fname="", _pr=False
-            )
-
-            # Reshape arrays from 1d to 2d
-            re_ex_2d = (
-                np.array(re0_ex)
-                .reshape((thisSlice.wfr.mesh.nx, thisSlice.wfr.mesh.ny), order="C")
-                .astype(np.float64)
-            )
-            im_ex_2d = (
-                np.array(im0_ex)
-                .reshape((thisSlice.wfr.mesh.nx, thisSlice.wfr.mesh.ny), order="C")
-                .astype(np.float64)
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
+                thisSlice.wfr
             )
 
             new_re_ex_2d = np.sqrt(re_ex_2d**2.0 + im_ex_2d**2.0)
@@ -555,6 +545,19 @@ class LaserPulse(ValidatorBase):
                 thisSlice.initial_laser_xy.x,
                 thisSlice.initial_laser_xy.y,
             )
+
+    def calc_total_energy(self):
+        photon_e_ev = np.zeros(self.nslice)
+        photon_number = np.zeros(self.nslice)
+
+        for laser_index_i in np.arange(self.nslice):
+            photon_number[laser_index_i] = np.sum(
+                self.slice[laser_index_i].n_photons_2d.mesh
+            )
+            photon_e_ev[laser_index_i] = self.slice[laser_index_i].photon_e_ev
+
+        pulse_energy = photon_number * photon_e_ev * const.e
+        return np.sum(pulse_energy)
 
     def _validate_params(self, input_params, files):
         # if files and input_params.nslice > 1:
@@ -625,25 +628,32 @@ class LaserPulseSlice(ValidatorBase):
         # self.z_waist = params.z_waist
         self.nslice = params.nslice
         self.nx_slice = params.nx_slice
-        self.ny_slice = params.ny_slice
         self.dist_waist = params.dist_waist
 
-        #  (Note KW: called this pulseE_slice because right now LPS is also passed pulseE for the whole pulse)
         self.pulseE_slice = (
             params.pulseE / self.nslice
         )  # currently assumes consistent length and energy across all slices
 
-        # compute slice photon energy from central energy, chirp, and slice index
-        self.photon_e_ev = (
-            params.photon_e_ev
-        )  # check that this is being properly incremented in the correct place (see LaserPulse class)
-        _de = params.chirp / self.nslice  # photon energy shift from slice to slice
-        self.photon_e_ev -= 0.5 * params.chirp + (
-            self.nslice * _de
-        )  # so central slice has the central photon energy
-
         self.sig_s = params.tau_fwhm * const.c / 2.355
         self.num_sig_long = params.num_sig_long
+        self.ds = (
+            2 * params.num_sig_long * self.sig_s / params.nslice
+        )  # longitudinal spacing between slices
+        # self._pulse_pos = self.dist_waist - params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
+        self._pulse_pos = (
+            -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
+        )
+
+        omega_0 = (2.0 * np.pi * const.c) / self._lambda0
+        chirp = np.sqrt(
+            (params.tau_fwhm / params.tau_0) ** 2.0 - 1.0
+        )  # tau_fwhm = tau_c
+        omega_chirp = omega_0 + (
+            (chirp * (self._pulse_pos / const.c)) / params.tau_fwhm**2.0
+        )
+        lambda_chirp = (2.0 * np.pi * const.c) / omega_chirp
+        self.photon_e_ev = units.calculate_phE_from_lambda0(lambda_chirp) / const.e
+
         constConvRad = 1.23984186e-06 / (
             4 * 3.1415926536
         )  ##conversion from energy to 1/wavelength
@@ -655,16 +665,6 @@ class LaserPulseSlice(ValidatorBase):
         sigrL_x = math.sqrt(self.sigx_waist**2 + (self.dist_waist * rmsAngDiv_x) ** 2)
         sigrL_y = math.sqrt(self.sigy_waist**2 + (self.dist_waist * rmsAngDiv_y) ** 2)
 
-        # *************begin function below**********
-
-        # sig_s = params.tau_fwhm * const.c / 2.355
-        self.ds = (
-            2 * params.num_sig_long * self.sig_s / params.nslice
-        )  # longitudinal spacing between slices
-        # self._pulse_pos = self.dist_waist - params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
-        self._pulse_pos = (
-            -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
-        )
         self._wavefront(params, files)
 
         # Calculate the initial number of photons in 2d grid of each slice from pulseE_slice
@@ -769,11 +769,11 @@ class LaserPulseSlice(ValidatorBase):
             ex_imag = np.multiply(e_norm, np.sin(wfs_data))
 
             # scale the wfr sensor data
-            self.wfs_norm_factor = 2841.7370456965646
+            self.wfs_norm_factor = 3378.048302768955  # 2841.7370456965646
 
             # scale for slice location
             number_slices_correction = np.exp(
-                -self._pulse_pos**2.0 / (2.0 * self.sig_s) ** 2.0
+                -self._pulse_pos**2.0 / (2.0 * self.sig_s**2.0)
             )
 
             ex_real *= number_slices_correction * self.wfs_norm_factor
@@ -795,8 +795,8 @@ class LaserPulseSlice(ValidatorBase):
 
         # Since pulseE = fwhm_tau * spot_size * intensity, new_pulseE = old_pulseE / fwhm_tau
         # Adjust for the length of the pulse + a constant factor to make pulseE = sum(energy_2d)
-        constant_factor = 7.3948753166511745
-        length_factor = constant_factor / self.ds
+        constant_factor = 1.198945869831954  # 7.3948753166511745
+        length_factor = constant_factor / (self.sig_s / params.nslice)  # / self.ds
 
         # calculate field energy in this slice
         sliceEnInt = (
@@ -813,7 +813,7 @@ class LaserPulseSlice(ValidatorBase):
             sliceEnInt,
             params.poltype,
             self.nx_slice,
-            self.ny_slice,
+            self.nx_slice,
             self.photon_e_ev,
             params.mx,
             params.my,
