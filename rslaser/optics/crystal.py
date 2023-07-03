@@ -404,31 +404,14 @@ class CrystalSlice(Element):
             slice_end = param_set[2]
 
             # calculate correction factor for representing a gaussian pulse with a series of flat-top slices
-            correction_factor = (
-                (np.exp(-self.alpha * slice_front)- np.exp(-self.alpha * slice_end))/ self.alpha)
-                / (np.exp(-self.alpha * z) * self.length
-            )
+            correction_factor = ((np.exp(-self.alpha * slice_front)- np.exp(-self.alpha * slice_end))/ self.alpha)/ (np.exp(-self.alpha * z) * self.length)
 
             # integrate super-gaussian
-            integral_factor = (
-                2 ** ((self.pump_gorder - 2.0) / self.pump_gorder) * gamma(2 / self.pump_gorder))
-                / (self.pump_gorder * (1 / (self.pump_waist**self.pump_gorder))** (2.0 / self.pump_gorder)
-            )
+            integral_factor = (2 ** ((self.pump_gorder - 2.0) / self.pump_gorder) * gamma(2 / self.pump_gorder))/ (self.pump_gorder * (1 / (self.pump_waist**self.pump_gorder))** (2.0 / self.pump_gorder))
             fraction_to_heating = 1. - self.lambda_pump/self.lambda_seed
 
             # Create mesh of [num_excited_states/m^3] pop_inversion_mesh
-            temp_mesh = (
-                (self.lambda_pump / (const.h * const.c))
-                * (
-                    (
-                        (1.- np.exp(-self.alpha * self.length* nslice))
-                        * (1.0 - fraction_to_heating)* self.pump_energy
-                        * np.exp(-2.0 * (p.sqrt((xv - self.pump_offset_x)** 2.0+ (yv - self.pump_offset_y)** 2.0)
-                            / self.pump_waist)** self.pump_gorder))
-                        / (const.pi * integral_factor)
-                ) * np.exp(-self.alpha * z) * correction_factor
-            ) / (self.length * nslice)
-
+            temp_mesh = ((self.lambda_pump / (const.h * const.c))* (((1.- np.exp(-self.alpha * self.length* nslice))* (1.0 - fraction_to_heating)* self.pump_energy* np.exp(-2.0 * (p.sqrt((xv - self.pump_offset_x)** 2.0+ (yv - self.pump_offset_y)** 2.0)/ self.pump_waist)** self.pump_gorder))/ (const.pi * integral_factor)) * np.exp(-self.alpha * z) * correction_factor) / (self.length * nslice)
             pop_inversion_mesh += temp_mesh
 
         self.pop_inversion_mesh = pop_inversion_mesh
