@@ -471,4 +471,3 @@ class ThermoOptic:
                 h5File.create_dataset("ABCDs", data=ABCDs)
                 h5File.create_dataset("full_ABCD", data=full_ABCD)
         return ABCDs, full_ABCD
-    
