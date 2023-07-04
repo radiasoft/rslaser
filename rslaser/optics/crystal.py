@@ -485,7 +485,7 @@ class CrystalSlice(Element):
                         * np.exp(
                             -2.0
                             * (
-                                p.sqrt(
+                                np.sqrt(
                                     (xv - self.pump_offset_x) ** 2.0
                                     + (yv - self.pump_offset_y) ** 2.0
                                 )
