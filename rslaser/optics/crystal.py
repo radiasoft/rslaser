@@ -36,10 +36,10 @@ _CRYSTAL_DEFAULTS = PKDict(
     delta_n_mesh_extent=0.01,  # range [m] of delta_n mesh assuming azimuthal symmetry
     length=0.2,
     l_scale=0.1,
-    rho= 3980., # [kg/m^3], density for Al2O3
-    Kc = 33., # [W/m K], thermal conductivity for Al203
-    cp = 756., # [J/kg K], specific heat capacity (constant pressure) for Al203
-    Tc = 0., # [C], coolant (or ambient) temperature outside the crystal
+    rho=3980.0,  # [kg/m^3], density for Al2O3
+    Kc=33.0,  # [W/m K], thermal conductivity for Al203
+    cp=756.0,  # [J/kg K], specific heat capacity (constant pressure) for Al203
+    Tc=0.0,  # [C], coolant (or ambient) temperature outside the crystal
     nslice=_N_SLICE_DEFAULT,
     slice_index=0,
     # A = 9.99988571e-01,
@@ -62,8 +62,8 @@ _CRYSTAL_DEFAULTS = PKDict(
     pop_inversion_pump_offset_x=0.0,
     pop_inversion_pump_offset_y=0.0,
     pop_inversion_pump_rep_rate=1.0e3,
-    pop_inversion_lambda_seed = 800., # [nm], seed wavelength for thermo-optic coupling factor
-    pop_inversion_lambda_pump = 532., # [nm], pump laser operating wavelength
+    pop_inversion_lambda_seed=800.0,  # [nm], seed wavelength for thermo-optic coupling factor
+    pop_inversion_lambda_pump=532.0,  # [nm], pump laser operating wavelength
 )
 
 
@@ -213,38 +213,40 @@ class Crystal(Element):
         laser_pulse.flatten_phase_edges()
         return laser_pulse
 
-    def calc_n0n2(self, set_n=False, mesh_density=50, method="analytical", heat_load="gaussian"):
+    def calc_n0n2(
+        self, set_n=False, mesh_density=50, method="analytical", heat_load="gaussian"
+    ):
         # mesh_density [int]: value ≥ 120 will produce more accurate results; slower, but closer to numerical conversion
-        
+
         # Validate choice of solution method
         method = method.lower()
         if method not in ("fenics", "analytical"):
-            raise ValueError("\'method\' must be either \'fenics\' or \'analytical\'")
-        
+            raise ValueError("'method' must be either 'fenics' or 'analytical'")
+
         # Initialize a thermo-optic simulator object
         TO_Sim = ThermoOptic(self, mesh_density)
-                
+
         # Set evaluation points for thermo-optic calculations
         n_radpts = 100  # no. of radial points at which to extract data
         n_longpts = self.nslice  # no. of longitudinal points at which to extract data
         TO_Sim.set_points((n_radpts, 0, n_longpts))
-        
+
         # For high rep-rates, solve steady-state heat equation
-        if (method=="fenics"):
-            
+        if method == "fenics":
+
             # Set boundary values for thermo-optic simulations
-            bc_tol = 2.*self.radius*(self.radius/40.0)  # 2 * rad * delta(rad)
+            bc_tol = 2.0 * self.radius * (self.radius / 40.0)  # 2 * rad * delta(rad)
             TO_Sim.set_boundary(bc_tol)
-            
+
             # Set thermal load & carry out thermo-optic simulation
             TO_Sim.set_load(heat_load)
             Trz = TO_Sim.solve_steady()
-            
+
         # For analytical solutions, compute Innocenzi solution
-        elif method=="analytical":
+        elif method == "analytical":
             TO_Sim.set_load(heat_load)
-            Trz = getattr(TO_Sim, heat_load+"_solution")()
-        
+            Trz = getattr(TO_Sim, heat_load + "_solution")()
+
         # Compute indices of refraction & ABCD matrices for each slice
         nT, nFit = TO_Sim.compute_indices(Trz)
         ABCDs, full_ABCD = TO_Sim.compute_ABCD(nFit)
@@ -255,7 +257,7 @@ class Crystal(Element):
                 s.n0 = nFit[s.slice_index, 0, 0]
                 s.n2 = nFit[s.slice_index, 0, 1]
 
-        return nFit[:,0,0], nFit[:,0,1], full_ABCD
+        return nFit[:, 0, 0], nFit[:, 0, 1], full_ABCD
 
     def extract_excited_states(self):
         long_excited_states = np.zeros(self.nslice)
