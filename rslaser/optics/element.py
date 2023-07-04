@@ -8,6 +8,10 @@ import rslaser.utils.srwl_uti_data as srwutil
 from scipy.interpolate import RectBivariateSpline
 
 
+class DeleteMe:
+    pass
+
+
 class ElementException(Exception):
     pass
 
