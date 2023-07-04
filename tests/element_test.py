@@ -26,7 +26,7 @@ def test_instantiation01():
     crystal.Crystal(
         PKDict(
             nslice=10,
-            pop_inversion_n_cells=32,
+            num_cells=32,
         )
     )
 
