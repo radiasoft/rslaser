@@ -235,7 +235,7 @@ class Crystal(Element):
         if method == "fenics":
 
             # Set boundary values for thermo-optic simulations
-            bc_tol = 2.0 * self.radius * (self.radius / 40.0)  # 2 * rad * delta(rad)
+            bc_tol = 2.0 * self.radius * (self.radius / 40.0) * 1.0e4 # 2 * rad * delta(rad)
             TO_Sim.set_boundary(bc_tol)
 
             # Set thermal load & carry out thermo-optic simulation

@@ -6,7 +6,7 @@ from h5py import File
 from mpmath import hyp2f2
 from scipy.optimize import curve_fit
 from mshr import Cylinder, generate_mesh
-from scipy.special import gamma, gammainc as GammaI, exp1
+from scipy.special import gamma, gammaincc as GammaI, exp1
 from numpy import array, zeros, pi, exp, log, unique, diag, argsort, sin, cos, sinc
 
 set_log_level(30)
@@ -30,9 +30,9 @@ class ThermoOptic:
     #   - Tophat expression is from Chen et al (1997), doi:10.1109/3.605566
 
     PROFILES = {
+        "tophat": "(x[0]*x[0]+x[1]*x[1]<=wp*wp)? Q0*exp(-alpha*(x[2]-z0)) : 0",
         "gaussian": "Q0*exp(-2*(x[0]*x[0]+x[1]*x[1])/(wp*wp))*exp(-alpha*(x[2]-z0))",
         "hog": "Q0*exp(-2*pow((x[0]*x[0]+x[1]*x[1])/(wp*wp),P/2.))*exp(-alpha*(x[2]-z0))",
-        "tophat": "(x[0]*x[0]+x[1]*x[1]<=wp)? Q0*exp(-alpha*(x[2]-z0)) : 0",
     }
 
     # Expressions for wavelength- & temperature-dependent indices of refraction
@@ -131,10 +131,10 @@ class ThermoOptic:
         elif heat_load == "hog":
             order = self.crystal.params.pop_inversion_pump_gaussian_order
             heat_params["P"] = order
-            Gams = GammaI(2 / order, 0) - GammaI(2 / order, 2 * (r0 / wp) ** order)
-            Vol = (2 * pi * wp**2 / order) * 4 ** (-1 / order) * Gams * etaAbs / alpha
+            Gams = GammaI(2.0 / order, 0.0) - GammaI(2.0 / order, 2.0 * (r0 / wp) ** order)
+            Vol = (2.0 * pi * wp**2 / order) * 4.0 ** (-1.0 / order) * Gams * etaAbs / alpha
 
-        heat_params["Q0"] = etah * Pabs / Vol
+        heat_params["Q0"] = etah * Pabs / (Kc * Vol)
 
         # Handling different cases for the pump type, set heat load expression
         if self.crystal.params.pop_inversion_pump_type == "right":
@@ -145,14 +145,16 @@ class ThermoOptic:
             hl_expr = self.PROFILES[heat_load]
         self.heat_load = Expression(hl_expr, degree=1, **heat_params)
 
-    def set_boundary(self, bc_tol, bc_type="dirichlet"):
+    def set_boundary(self, bc_tol=0.1, bc_type="dirichlet"):
         """
         Sets the boundary conditions for thermo-optic calculations
 
         Args:
-        * `bc_tol`- boundary tolerance (m)
+        * `bc_tol`- boundary tolerance (cm, default 0.1)
         * `bc_type`- boundary condition type (default Dirichlet)
         """
+        
+        r0 = self.crystal.radius * 1.0e2
 
         # Validate choice of boundary condition
         if bc_type not in self.BCTYPES:
@@ -163,7 +165,7 @@ class ThermoOptic:
         if (not isinstance(bc_tol, float)) or (bc_tol <= 0):
             raise ValueError("'bc_tol' must be a float greater than zero")
         boundary = lambda x, on_boundary: on_boundary and near(
-            x[0] * x[0] + x[1] * x[1], r**2.0, bc_tol
+            x[0] * x[0] + x[1] * x[1], r0 * r0, bc_tol
         )
         self.boundary = BC(self.space, Constant(self.crystal.params.Tc), boundary)
 
@@ -235,7 +237,7 @@ class ThermoOptic:
 
         # Set initial temperature state
         T = interpolate(self.crystal.params.Tc, self.space)
-        Ts[0, :] = [T(pt) for pt in self.eval_pts]
+        Ts[0, :] = array([T(pt) for pt in self.eval_pts])
 
         # Initialize variational variables used by FEniCS
         u = TrialFunction(self.space)
@@ -267,17 +269,6 @@ class ThermoOptic:
                 T.assign(T_solve)
                 Ts[n, :] = [T(pt) for pt in self.eval_pts]
 
-        # Rotate the temperature results if pumping from the right
-        if self.crystal.params.pop_inversion_pump_type == "right":
-            Ts = self._rotate_results(Ts)
-
-        # Add the temperature results if dual-pumping
-        # TODO: Fix this so that dual-pumping is handled with an extra source term
-        #     - Note: the other source term should vary like exp(-alpha*(z+z0)
-        elif self.crystal.params.pop_inversion_pump_type == "dual":
-            zorder = argsort(self.eval_pts[:, 2])
-            Ts = Ts + Ts[zorder[::-1]]
-
         # Return temperature field, saving if requested
         if save:
             with File(path, "w") as h5File:
@@ -300,27 +291,15 @@ class ThermoOptic:
         # Set FEniCS log & define shortnames for useful quantities
         set_log_level(50)
         f = self.heat_load
-        T = Function(self.space)
 
         # Initialize variational variables used by FEniCS
-        u = TrialFunction(self.space)
+        u = Function(self.space)
         v = TestFunction(self.space)
 
         # Define time-independent differential equation for temperature
         F = dot(grad(u), grad(v)) * dx - f * v * dx
-        solve(F == 0.0, T, self.boundary)
-        Ts = [T(pt) for pt in self.eval_pts]
-
-        # Rotate the temperature results if pumping from the right
-        if self.crystal.params.pop_inversion_pump_type == "right":
-            Ts = self._rotate_results(Ts)
-
-        # Add the temperature results if dual-pumping
-        # TODO: Fix this so that dual-pumping is handled with an extra source term
-        #     - Note: the other source term should vary like exp(-alpha*(z+z0)
-        elif self.crystal.params.pop_inversion_pump_type == "dual":
-            zorder = argsort(self.eval_pts[:, 2])
-            Ts = Ts + Ts[zorder[::-1]]
+        solve(F == 0.0, u, self.boundary)
+        Ts = array([u(pt) for pt in self.eval_pts])
 
         # Return temperature field, saving if requested
         if save:
@@ -528,10 +507,10 @@ class ThermoOptic:
         dz = self.crystal.length / nz
 
         # Compute ABCD matrices at each longitudinal point
-        ABCDs = zeros((nz, 2, 2)) + 0j
+        ABCDs = zeros((nz, 2, 2))
         for z in range(nz):
             n0, n2 = ns[z, 0]
-            gamma = (n2 / n0 + 0j) ** 0.5
+            gamma = (n2 / n0) ** 0.5
             ABCDs[z] = [
                 [cos(gamma * dz), dz * sinc(gamma * dz / pi)],
                 [-n0 * gamma * sin(gamma * dz), cos(gamma * dz)],
