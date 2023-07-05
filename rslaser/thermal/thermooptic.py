@@ -148,7 +148,7 @@ class ThermoOptic:
         if self.crystal.params.pop_inversion_pump_type == "right":
             hl_expr = self.PROFILES[heat_load].replace("x[2]-z0", "-x[2]-z0")
         elif self.crystal.params.pop_inversion_pump_type == "dual":
-            hl_expr = self.PROFILES[heat_load].replace("x[2]-z0", "abs(x[2])-z0")
+            hl_expr = self.PROFILES[heat_load].replace("x[2]-z0", "-abs(x[2])-z0")
         else:
             hl_expr = self.PROFILES[heat_load]
         self.heat_load = Expression(hl_expr, degree=1, **heat_params)
