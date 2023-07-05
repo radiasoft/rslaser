@@ -131,8 +131,16 @@ class ThermoOptic:
         elif heat_load == "hog":
             order = self.crystal.params.pop_inversion_pump_gaussian_order
             heat_params["P"] = order
-            Gams = GammaI(2.0 / order, 0.0) - GammaI(2.0 / order, 2.0 * (r0 / wp) ** order)
-            Vol = (2.0 * pi * wp**2 / order) * 4.0 ** (-1.0 / order) * Gams * etaAbs / alpha
+            Gams = GammaI(2.0 / order, 0.0) - GammaI(
+                2.0 / order, 2.0 * (r0 / wp) ** order
+            )
+            Vol = (
+                (2.0 * pi * wp**2 / order)
+                * 4.0 ** (-1.0 / order)
+                * Gams
+                * etaAbs
+                / alpha
+            )
 
         heat_params["Q0"] = etah * Pabs / (Kc * Vol)
 
@@ -153,7 +161,7 @@ class ThermoOptic:
         * `bc_tol`- boundary tolerance (cm, default 0.1)
         * `bc_type`- boundary condition type (default Dirichlet)
         """
-        
+
         r0 = self.crystal.radius * 1.0e2
 
         # Validate choice of boundary condition
