@@ -485,16 +485,16 @@ class ThermoOptic:
         Args:
         * `Ts`- temperatures to use for calculations
         * `material`- material type (Al203 or NdYAG, default Ti:Al2O3)
-        * `fit_edge`- width of central region used in curve fitting (m)
+        * `fit_width`- width of central region used in curve fitting (m)
         """
 
         # Use default fit_width relative to pump waist if none given
         if not fit_width:
-            fit_width = 0.5 * (self.crystal.params.pop_inversion_pump_waist * 1.0e2)
+            fit_width = 0.5 * self.crystal.params.pop_inversion_pump_waist
 
         # Define short names for useful quantities
-        zs = unique(self.eval_pts[:, 2])
-        rs = (self.eval_pts[:, 0] ** 2 + self.eval_pts[:, 1] ** 2) ** 0.5
+        zs = unique(self.eval_pts[:, 2]) / 1.0e2
+        rs = (self.eval_pts[:, 0] ** 2 + self.eval_pts[:, 1] ** 2) ** 0.5 / 1.0e2
         npts = len(self.eval_pts)
 
         # Compute analytical & quadratic fit index values
@@ -525,7 +525,7 @@ class ThermoOptic:
 
         # Define shortnames for useful quantities
         nz = len(set(self.eval_pts[:, 2]))
-        dz = self.crystal.length * 1.0e2 / nz
+        dz = self.crystal.length / nz
 
         # Compute ABCD matrices at each longitudinal point
         ABCDs = zeros((nz, 2, 2)) + 0j
@@ -533,7 +533,7 @@ class ThermoOptic:
             n0, n2 = ns[z, 0]
             gamma = (n2 / n0 + 0j) ** 0.5
             ABCDs[z] = [
-                [cos(gamma * dz), sinc(gamma * dz / pi) / (n0 * gamma)],
+                [cos(gamma * dz), dz * sinc(gamma * dz / pi)],
                 [-n0 * gamma * sin(gamma * dz), cos(gamma * dz)],
             ]
 
