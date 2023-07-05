@@ -7,7 +7,7 @@ from mpmath import hyp2f2
 from scipy.optimize import curve_fit
 from mshr import Cylinder, generate_mesh
 from scipy.special import gamma, gammainc as GammaI, exp1
-from numpy import array, zeros, pi, exp, log, unique, diag, argsort, sin, cos
+from numpy import array, zeros, pi, exp, log, unique, diag, argsort, sin, cos, sinc
 
 set_log_level(30)
 
@@ -533,7 +533,7 @@ class ThermoOptic:
             n0, n2 = ns[z, 0]
             gamma = (n2 / n0 + 0j) ** 0.5
             ABCDs[z] = [
-                [cos(gamma * dz), sin(gamma * dz) / (n0 * gamma)],
+                [cos(gamma * dz), sinc(gamma * dz / pi) / (n0 * gamma)],
                 [-n0 * gamma * sin(gamma * dz), cos(gamma * dz)],
             ]
 
