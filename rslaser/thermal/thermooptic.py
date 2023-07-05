@@ -501,7 +501,7 @@ class ThermoOptic:
         nT = self.INDICES[material](Ts)
         nFit = zeros((len(zs), 2, 2))
         for z in range(len(zs)):
-            in_fit = (self.eval_pts[:, 2] == zs[z]) * (abs(rs) <= fit_width)
+            in_fit = (self.eval_pts[:, 2] / 1.0e2 == zs[z]) * (abs(rs) <= fit_width)
             pfit, varfit = curve_fit(
                 lambda r, n0, n2: n0 - 0.5 * n2 * r**2.0, rs[in_fit], nT[in_fit]
             )
