@@ -546,6 +546,67 @@ class LaserPulse(ValidatorBase):
                 thisSlice.initial_laser_xy.y,
             )
 
+    def update_photon_positions(self):
+        for laser_index_i in np.arange(self.nslice):
+
+            thisSlice = self.slice[laser_index_i]
+            initial_photons = np.copy(thisSlice.n_photons_2d.mesh)
+
+            intens_2d = srwutil.calc_int_from_elec(
+                thisSlice.wfr
+            )  # extract 2d intensity
+            efield_abs_sqrd_2d = (
+                np.sqrt(const.mu_0 / const.epsilon_0) * 2.0 * intens_2d
+            )  # [V^2/m^2]
+
+            dx = (
+                thisSlice.wfr.mesh.xFin - thisSlice.wfr.mesh.xStart
+            ) / thisSlice.wfr.mesh.nx
+            dy = (
+                thisSlice.wfr.mesh.yFin - thisSlice.wfr.mesh.yStart
+            ) / thisSlice.wfr.mesh.ny
+            cell_area = dx * dy
+
+            # Field energy per grid cell is the area of that cell times the energy density
+            end1 = (thisSlice._pulse_pos - 0.5 * thisSlice.ds) / (
+                np.sqrt(2.0) * thisSlice.sig_s
+            )
+            end2 = (thisSlice._pulse_pos + 0.5 * thisSlice.ds) / (
+                np.sqrt(2.0) * thisSlice.sig_s
+            )
+            energy_2d = (
+                cell_area
+                * (const.epsilon_0 / 2.0)
+                * (
+                    efield_abs_sqrd_2d
+                    / np.exp(
+                        -thisSlice._pulse_pos**2.0
+                        / (np.sqrt(2.0) * thisSlice.sig_s) ** 2.0
+                    )
+                )
+                * (
+                    (np.sqrt(np.pi) / 2.0)
+                    * (np.sqrt(2.0) * thisSlice.sig_s)
+                    * (special.erf(end2) - special.erf(end1))
+                )
+            )
+            # Get slice value of photon_e (will be in eV)
+            photon_e = thisSlice.photon_e_ev * const.e
+
+            # Number of photons in each grid cell can be found by dividing the
+            # total energy of the laser in that grid cell by the energy of a photon
+            thisSlice.n_photons_2d.mesh = energy_2d / photon_e
+            thisSlice.n_photons_2d.x = np.linspace(
+                thisSlice.wfr.mesh.xStart,
+                thisSlice.wfr.mesh.xFin,
+                thisSlice.wfr.mesh.nx,
+            )
+            thisSlice.n_photons_2d.y = np.linspace(
+                thisSlice.wfr.mesh.yStart,
+                thisSlice.wfr.mesh.yFin,
+                thisSlice.wfr.mesh.ny,
+            )
+
     def calc_total_energy(self):
         photon_e_ev = np.zeros(self.nslice)
         photon_number = np.zeros(self.nslice)
@@ -644,19 +705,9 @@ class LaserPulseSlice(ValidatorBase):
             -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
         )
 
-        # omega_0 = (2.0 * np.pi * const.c) / self._lambda0
-        # chirp = np.sqrt(
-        #     (params.tau_fwhm / params.tau_0) ** 2.0 - 1.0
-        # )  # tau_fwhm = tau_c
-        # omega_chirp = omega_0 + (
-        #     (chirp * (self._pulse_pos / const.c)) / params.tau_fwhm**2.0
-        # )
-        # lambda_chirp = (2.0 * np.pi * const.c) / omega_chirp
-        # self.photon_e_ev = units.calculate_phE_from_lambda0(lambda_chirp) / const.e
-        
-        chirp = (2.0*np.log(2.0)) / (params.tau_fwhm * params.tau_0)
+        chirp = (2.0 * np.log(2.0)) / (params.tau_fwhm * params.tau_0)
         nu = (const.c / self._lambda0) + (chirp / np.pi) * (self._pulse_pos / const.c)
-        self._lambda = (const.c / nu)
+        self._lambda = const.c / nu
         self.photon_e_ev = units.calculate_phE_from_lambda0(self._lambda) / const.e
 
         constConvRad = 1.23984186e-06 / (
@@ -827,12 +878,6 @@ class LaserPulseSlice(ValidatorBase):
     def calc_init_n_photons(self):
 
         # Note: assumes longitudinal gaussian profile when initializing
-
-        # intensity = srwlib.array('f', [0]*self.wfr.mesh.nx*self.wfr.mesh.ny) # "flat" array to take 2D intensity data
-        # srwl.CalcIntFromElecField(intensity, self.wfr, 0, 0, 3, self.wfr.mesh.eStart, 0, 0) #extracts intensity
-
-        # # Reshaping intensity data from flat to 2D array
-        # intens_2d = np.array(intensity).reshape((self.wfr.mesh.nx, self.wfr.mesh.ny), order='C').astype(np.float64)
 
         intens_2d = srwutil.calc_int_from_elec(self.wfr)  # extract 2d intensity
 

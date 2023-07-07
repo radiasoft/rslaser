@@ -28,6 +28,7 @@ class Element(ValidatorBase):
         elif self.prop_type == "lct":
             laser_pulse = _prop_abcd_lct(laser_pulse, self.abcd_matrix, self.l_scale)
 
+        laser_pulse.update_photon_positions()
         return laser_pulse
 
 
