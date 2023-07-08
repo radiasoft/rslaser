@@ -94,7 +94,9 @@ class Crystal(Element):
         self.length = params.length
         self.radius = params.pop_inversion_mesh_extent
         self.alpha = params.pop_inversion_crystal_alpha
+        self.cp = params.cp
         self.Kc = params.Kc
+        self.rho = params.rho
         self.nslice = params.nslice
         self.l_scale = params.l_scale
         self.slice = []
@@ -231,8 +233,12 @@ class Crystal(Element):
         n_longpts = self.nslice  # no. of longitudinal points at which to extract data
         TO_Sim.set_points((n_radpts, 0, n_longpts))
 
+        # For low rep-rates, ignore method & use direct calculation
+        if self.params.pop_inversion_pump_rep_rate <= TO_Sim.RATECUTOFFS[0]:
+            Trz = TO_Sim.slow_solution(heat_load)
+
         # For high rep-rates, solve steady-state heat equation
-        if method == "fenics":
+        elif method == "fenics":
 
             # Set boundary values for thermo-optic simulations
             bc_tol = (
@@ -246,20 +252,19 @@ class Crystal(Element):
 
         # For analytical solutions, compute Innocenzi solution
         elif method == "analytical":
-            TO_Sim.set_load(heat_load)
             Trz = getattr(TO_Sim, heat_load + "_solution")()
 
         # Compute indices of refraction & ABCD matrices for each slice
-        nT, nFit = TO_Sim.compute_indices(Trz)
-        ABCDs, full_ABCD = TO_Sim.compute_ABCD(nFit)
+        nT, n0, n2 = TO_Sim.compute_indices(Trz)
+        ABCDs, full_ABCD = TO_Sim.compute_ABCD(n0, n2)
 
         # Set n0/n2 values for crystal slices if desired
         if set_n:
             for s in self.slice:
-                s.n0 = nFit[s.slice_index, 0, 0]
-                s.n2 = nFit[s.slice_index, 0, 1]
+                s.n0 = n0[s.slice_index]
+                s.n2 = n2[s.slice_index]
 
-        return nFit[:, 0, 0], nFit[:, 0, 1], full_ABCD
+        return n0, n2, full_ABCD
 
     def extract_excited_states(self):
         long_excited_states = np.zeros(self.nslice)
