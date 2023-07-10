@@ -50,13 +50,33 @@ class ThermoOptic:
         "dirichlet": DirichletBC,
     }
 
+    # Rep-rate cutoffs for thermo-optic calculations (Hz)
+    RATECUTOFFS = [1.0, 100.0]
+
+    # Rep-rate errors for invalid choices of thermo-optic calculations
+    RATEERRORS = {
+        "nomethods": "ThermoOptic methods are invalid for Crystals with "
+        + "pump rep-rates between {:.1f} and {:.1f} Hz".format(*RATECUTOFFS),
+        "toolow": "ThermoOptic method '{:s}' is invalid for Crystals with "
+        + "pump rep-rates lower than {:.1f} Hz".format(RATECUTOFFS[1]),
+        "toohigh": "ThermoOptic method '{:s}' is invalid for Crystals with "
+        + "pump rep-rates higher than {:.1f} Hz".format(RATECUTOFFS[1]),
+    }
+
     __slots__ = ("mesh", "space", "crystal", "heat_load", "boundary", "eval_pts")
 
     def __init__(self, crystal, mesh_density=50):
 
+        # Assign crystal & validate rep-rate interoperability with thermo-optic calculations
+        self.crystal = crystal
+        if (
+            self.crystal.params.pop_inversion_pump_rep_rate > self.RATECUTOFFS[0]
+            and self.crystal.params.pop_inversion_pump_rep_rate < self.RATECUTOFFS[1]
+        ):
+            raise RuntimeError(self.RATEERRORS["nomethods"])
+
         # Attempt to generate Crystal mesh, & solution space
         try:
-            self.crystal = crystal
             L = self.crystal.length * 1.0e2
             r0 = self.crystal.radius * 1.0e2
             self.mesh = generate_mesh(
@@ -67,7 +87,7 @@ class ThermoOptic:
         except Exception as e:
             raise RuntimeError(
                 "Unable to generate Crystal mesh, received error:\n\t-> {:s}".format(
-                    str(e)
+                    repr(e)
                 )
             )
 
@@ -75,6 +95,47 @@ class ThermoOptic:
         self.heat_load = None
         self.boundary = None
         self.eval_pts = array([])
+
+    def _compute_volume(self, heat_load):
+        """
+        Computes the effective heat pumping volume in a crystal
+
+        Volume integrals given in Eqns. 10, 17, & 26 of Cini & Mackenzie (2017), doi:10.1007/s00340-017-6848-y
+
+        Args:
+        * `heat_load`- str designating a heat load profile or a FEniCS Expression/UserExpression
+        """
+
+        # Define shortnames for useful quantities
+        L = self.crystal.length * 1.0e2
+        r0 = self.crystal.radius * 1.0e2
+        alpha = self.crystal.alpha / 1.0e2
+        wp = self.crystal.params.pop_inversion_pump_waist * 1.0e2
+
+        # Compute absorption efficiency
+        etaAbs = 1.0 - exp(-alpha * L)
+
+        # Compute pumping volume & heat load constant
+        if heat_load == "tophat":
+            Vol = pi * wp**2 * etaAbs / alpha
+
+        elif heat_load == "gaussian":
+            Vol = 0.5 * pi * wp**2 * (1 - exp(-2 * (r0 / wp) ** 2)) * etaAbs / alpha
+
+        elif heat_load == "hog":
+            order = self.crystal.params.pop_inversion_pump_gaussian_order
+            Gams = GammaI(2.0 / order, 0.0) - GammaI(
+                2.0 / order, 2.0 * (r0 / wp) ** order
+            )
+            Vol = (
+                (2.0 * pi * wp**2 / order)
+                * 4.0 ** (-1.0 / order)
+                * Gams
+                * etaAbs
+                / alpha
+            )
+
+        return Vol
 
     def set_load(self, heat_load):
         """
@@ -104,45 +165,28 @@ class ThermoOptic:
         # Define shortnames for useful quantities
         Kc = self.crystal.Kc / 1.0e2
         L = self.crystal.length * 1.0e2
-        r0 = self.crystal.radius * 1.0e2
         alpha = self.crystal.alpha / 1.0e2
         wp = self.crystal.params.pop_inversion_pump_waist * 1.0e2
+        lambda_seed = self.crystal.params.pop_inversion_lambda_seed
+        lambda_pump = self.crystal.params.pop_inversion_lambda_pump
         Pabs = (
             self.crystal.params.pop_inversion_pump_energy
             * self.crystal.params.pop_inversion_pump_rep_rate
         )
-        lambda_seed = self.crystal.params.pop_inversion_lambda_seed
-        lambda_pump = self.crystal.params.pop_inversion_lambda_pump
 
         # Define parameters related to crystal & pump parameters
         heat_params = {"wp": wp, "alpha": alpha, "z0": -L / 2.0}
 
-        # Compute fractional thermal load & absorption efficiency
+        # Compute fractional thermal load & effective pumping volume
         etah = abs(1.0 - lambda_pump / lambda_seed)
-        etaAbs = 1.0 - exp(-alpha * L)
+        Vol = self._compute_volume(heat_load)
 
-        # Compute pumping volume & heat load constant
-        if heat_load == "tophat":
-            Vol = pi * wp**2 * etaAbs / alpha
-
-        elif heat_load == "gaussian":
-            Vol = 0.5 * pi * wp**2 * (1 - exp(-2 * (r0 / wp) ** 2)) * etaAbs / alpha
-
-        elif heat_load == "hog":
-            order = self.crystal.params.pop_inversion_pump_gaussian_order
-            heat_params["P"] = order
-            Gams = GammaI(2.0 / order, 0.0) - GammaI(
-                2.0 / order, 2.0 * (r0 / wp) ** order
-            )
-            Vol = (
-                (2.0 * pi * wp**2 / order)
-                * 4.0 ** (-1.0 / order)
-                * Gams
-                * etaAbs
-                / alpha
-            )
-
+        # Compute heat normalization constant
         heat_params["Q0"] = etah * Pabs / (Kc * Vol)
+
+        # Add the order parameter for higher-order Gaussian loads
+        if heat_load == "hog":
+            heat_params["P"] = self.crystal.params.pop_inversion_pump_gaussian_order
 
         # Handling different cases for the pump type, set heat load expression
         if self.crystal.params.pop_inversion_pump_type == "right":
@@ -227,6 +271,10 @@ class ThermoOptic:
         Given in Eqn. 2.1.1 in Chenais et al (2006), doi:10.1016/j.pquantelec.2006.12.001
         """
 
+        # Validate interoperability of Crystal and solve_time method
+        if self.crystal.params.pop_inversion_pump_rep_rate < self.RATECUTOFFS[1]:
+            raise RuntimeError(self.RATEERRORS["toolow"].format("solve_time"))
+
         # Ensure that a heat load, boundary conditions, & evaluation points have been set
         if (not self.heat_load) | (not self.boundary) | (not self.eval_pts.size):
             raise RuntimeError(
@@ -290,6 +338,10 @@ class ThermoOptic:
         Given in Eqn. 2.1.1 (without time term) in Chenais et al (2006), doi:10.1016/j.pquantelec.2006.12.001
         """
 
+        # Validate interoperability of Crystal and solve_steady method
+        if self.crystal.params.pop_inversion_pump_rep_rate < self.RATECUTOFFS[1]:
+            raise RuntimeError(self.RATEERRORS["toolow"].format("solve_steady"))
+
         # Ensure that a heat load, boundary conditions, & evaluation points have been set
         if (not self.heat_load) | (not self.boundary) | (not self.eval_pts.size):
             raise RuntimeError(
@@ -315,6 +367,69 @@ class ThermoOptic:
                 h5File.create_dataset(data=Ts)
         return Ts
 
+    def slow_solution(self, heat_load, save=False, path="./T-crystal.h5"):
+        """
+        Computes a solution to the steady state heat equation given a low pump rep-rate
+        """
+
+        # Validate interoperability of Crystal and slow_solution method
+        if self.crystal.params.pop_inversion_pump_rep_rate > self.RATECUTOFFS[0]:
+            raise RuntimeError(self.RATEERRORS["toohigh"].format("slow_solution"))
+
+        # Validate choice of heat load
+        if heat_load.lower() not in self.PROFILES:
+            raise ValueError(
+                "'heat_load' (str) must be one of: {:s}".format(
+                    ", ".join(self.PROFILES)
+                )
+            )
+
+        # Define shortnames for useful quantities
+        cp = self.crystal.cp
+        Kc = self.crystal.Kc / 1.0e2
+        L = self.crystal.length * 1.0e2
+        r0 = self.crystal.radius * 1.0e2
+        alpha = self.crystal.alpha / 1.0e2
+        rho = self.crystal.rho / 1.0e6
+        wp = self.crystal.params.pop_inversion_pump_waist * 1.0e2
+        Jabs = self.crystal.params.pop_inversion_pump_energy
+        lambda_seed = self.crystal.params.pop_inversion_lambda_seed
+        lambda_pump = self.crystal.params.pop_inversion_lambda_pump
+        z0 = -L / 2.0
+
+        # Compute fractional thermal load & absorption efficiency
+        etah = abs(1.0 - lambda_pump / lambda_seed)
+
+        # Compute total change in temperature
+        Vol = self._compute_volume(heat_load)
+        M = Vol * rho  # grams
+        dQ = Jabs / (cp * M)
+
+        # Extract radial & axial values for all evaluation points
+        zs = self.eval_pts[:, 2]
+        rs = (self.eval_pts[:, 0] ** 2 + self.eval_pts[:, 1] ** 2) ** 0.5
+        if self.crystal.params.pop_inversion_pump_type == "right":
+            zs *= -1
+        elif self.crystal.params.pop_inversion_pump_type == "dual":
+            zs = -abs(zs)
+
+        # Compute portion of total temperature change at evaluation points
+        Z = exp(-alpha * (zs - z0))
+        if heat_load == "tophat":
+            R = rs <= wp
+        elif heat_load == "gaussian":
+            R = exp(-2.0 * (rs / wp) ** 2)
+        elif heat_load == "hog":
+            order = self.crystal.params.pop_inversion_pump_gaussian_order
+            R = exp(-2.0 * (rs / wp) ** order)
+        Trz = dQ * R * Z
+
+        # Return temperature field, saving if requested
+        if save:
+            with File(path, "w") as h5File:
+                h5File.create_dataset(data=Trz)
+        return Trz
+
     def tophat_solution(self, save=False, path="./T-crystal.h5"):
         """
         Computes a solution to the steady state heat equation given a tophat heat load
@@ -322,6 +437,10 @@ class ThermoOptic:
         Given in Eqn. 13 of Chen et al (1997), doi:10.1109/3.605566
         (Also Eqn. 2.1.6 of Chenais et al (2006), doi:10.1016/j.pquantelec.2006.12.001)
         """
+
+        # Validate interoperability of Crystal and solve_time method
+        if self.crystal.params.pop_inversion_pump_rep_rate < self.RATECUTOFFS[1]:
+            raise RuntimeError(self.RATEERRORS["toolow"].format("tophat_solution"))
 
         # Define shortnames for useful quantities
         Kc = self.crystal.Kc / 1.0e2
@@ -367,6 +486,10 @@ class ThermoOptic:
         Given in Eqn. 7 of Innocenzi et al (1990), doi:10.1063/1.103083
         """
 
+        # Validate interoperability of Crystal and solve_time method
+        if self.crystal.params.pop_inversion_pump_rep_rate < self.RATECUTOFFS[1]:
+            raise RuntimeError(self.RATEERRORS["toolow"].format("gaussian_solution"))
+
         # Define shortnames for useful quantities
         Kc = self.crystal.Kc / 1.0e2
         L = self.crystal.length * 1.0e2
@@ -410,6 +533,10 @@ class ThermoOptic:
 
         Given in Eqn. 28 of Cini & Mackenzie (2017), doi:10.1007/s00340-017-6848-y
         """
+
+        # Validate interoperability of Crystal and solve_time method
+        if self.crystal.params.pop_inversion_pump_rep_rate < self.RATECUTOFFS[1]:
+            raise RuntimeError(self.RATEERRORS["toolow"].format("hog_solution"))
 
         # Define shortnames for useful quantities
         Kc = self.crystal.Kc / 1.0e2
@@ -464,7 +591,13 @@ class ThermoOptic:
         return Trz
 
     def compute_indices(
-        self, Ts, material="Ti:Al2O3", fit_width=None, save=False, path="./n-crystal.h5"
+        self,
+        Ts,
+        material="Ti:Al2O3",
+        fit_width=None,
+        save=False,
+        path="./n-crystal.h5",
+        want_vars=False,
     ):
         """
         Computes indices of refraction based on material & temperature
@@ -484,25 +617,42 @@ class ThermoOptic:
         rs = (self.eval_pts[:, 0] ** 2 + self.eval_pts[:, 1] ** 2) ** 0.5 / 1.0e2
         npts = len(self.eval_pts)
 
-        # Compute analytical & quadratic fit index values
+        # Compute refractive index values analytically
         nT = self.INDICES[material](Ts)
-        nFit = zeros((len(zs), 2, 2))
-        for z in range(len(zs)):
-            in_fit = (self.eval_pts[:, 2] / 1.0e2 == zs[z]) * (abs(rs) <= fit_width)
-            pfit, varfit = curve_fit(
-                lambda r, n0, n2: n0 - 0.5 * n2 * r**2.0, rs[in_fit], nT[in_fit]
-            )
-            nFit[z, 0, :] = pfit
-            nFit[z, 1, :] = diag(varfit)
 
-        # Return indices, saving if requested
+        # Initialize fitted values of n0/n2
+        n0 = zeros(len(zs))
+        n2 = zeros(len(zs))
+
+        # For sufficiently high rep-rates, get quadratic Taylor series fits to refractive index curves
+        if self.crystal.params.pop_inversion_pump_rep_rate >= 100.0:
+            for z in range(len(zs)):
+                in_fit = (self.eval_pts[:, 2] / 1.0e2 == zs[z]) * (abs(rs) <= fit_width)
+                pfit, varfit = curve_fit(
+                    lambda r, n0, n2: n0 - 0.5 * n2 * r**2.0, rs[in_fit], nT[in_fit]
+                )
+                n0[z], n2[z] = pfit
+
+        # For sufficiently low rep-rates, compute average refractive indices along the central axis
+        elif self.crystal.params.pop_inversion_pump_rep_rate <= 1.0:
+            for z in range(len(zs)):
+                in_fit = self.eval_pts[:, 2] / 1.0e2 == zs[z]
+                n0[z] = nT[in_fit].mean()
+
+        # For invalid rep-rates, alert the user to an issue
+        else:
+            raise RuntimeError(self.RATEERRORS["nomethods"])
+
+        # Return refractive index values, saving to a file if desired
         if save:
             with File(path, "w") as h5File:
                 h5File.create_dataset("nT", data=nT)
-                h5File.create_dataset("nFit", data=nFit)
-        return nT, nFit
+                h5File.create_dataset("n0", data=n0)
+                h5File.create_dataset("n2", data=n2)
 
-    def compute_ABCD(self, ns, save=False, path="./ABCD-crystal.h5"):
+        return nT, n0, n2
+
+    def compute_ABCD(self, n0s, n2s, save=False, path="./ABCD-crystal.h5"):
         """
         Computes ABCD matrices for each longitudinal eval point in the crystal
 
@@ -517,7 +667,8 @@ class ThermoOptic:
         # Compute ABCD matrices at each longitudinal point
         ABCDs = zeros((nz, 2, 2))
         for z in range(nz):
-            n0, n2 = ns[z, 0]
+            n0 = n0s[z]
+            n2 = n2s[z]
             gamma = (n2 / n0) ** 0.5
             ABCDs[z] = [
                 [cos(gamma * dz), dz * sinc(gamma * dz / pi)],
