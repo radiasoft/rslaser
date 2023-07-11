@@ -91,7 +91,8 @@ def test_sirepo_compatability():
                         pop_inversion_pump_type="dual",
                     ),
                 ),
-                ["n0n2_srw", False, False],
+                ["n0n2_srw", True, False],
+                80,
             ),
             (Drift_srw(0.5), ["default"]),
             (Lens_srw(2), ["default"]),
@@ -103,6 +104,8 @@ def test_sirepo_compatability():
         crystal_count = 0
         for idx in beamline:
             e = elements[idx]
+            if isinstance(e[0], Crystal):
+                e[0].calc_n0n2(set_n=True, mesh_density=e[2])
             p = e[0].propagate(p, *e[1])
     except Exception:
         raise AssertionError(
