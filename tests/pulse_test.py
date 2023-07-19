@@ -47,16 +47,17 @@ def test_sirepo_compatability():
         p = pulse.LaserPulse(
             params=PKDict(
                 nslice=3,
-                num_sig_long=3,
-                num_sig_trans=6,
+                num_sig_long=3.0,
+                num_sig_trans=6.0,
                 nx_slice=64,
                 photon_e_ev=1.5,
                 poltype=1,
                 pulseE=0.001,
                 sigx_waist=0.001,
                 sigy_waist=0.001,
-                tau_fwhm=2.35865e-11,
-                tau_0=2.35865e-11,
+                tau_fwhm=2.3586500000000002e-11,
+                phase_flatten_cutoff=0.85,
+                tau_0=2.3586500000000002e-11,
             ),
         )
 
@@ -93,6 +94,7 @@ def test_sirepo_compatability():
                 ),
                 ["n0n2_srw", True, False],
                 80,
+                "gaussian",
             ),
             (Drift_srw(0.5), ["default"]),
             (Lens_srw(2), ["default"]),
@@ -105,7 +107,7 @@ def test_sirepo_compatability():
         for idx in beamline:
             e = elements[idx]
             if isinstance(e[0], Crystal):
-                e[0].calc_n0n2(set_n=True, mesh_density=e[2])
+                e[0].calc_n0n2(set_n=True, mesh_density=e[2], heat_load=e[3])
             p = e[0].propagate(p, *e[1])
     except Exception:
         raise AssertionError(
