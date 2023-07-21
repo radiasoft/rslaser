@@ -3,7 +3,9 @@ import copy
 import numpy as np
 from pykern.pkcollections import PKDict
 from rsmath import lct as rslct
+import srwlib
 from srwlib import srwl
+import scipy.constants as const
 import rslaser.utils.srwl_uti_data as srwutil
 from scipy.interpolate import RectBivariateSpline
 
@@ -27,6 +29,8 @@ class Element(ValidatorBase):
                 srwl.PropagElecField(w.wfr, self._srwc)
         elif self.prop_type == "lct":
             laser_pulse = _prop_abcd_lct(laser_pulse, self.abcd_matrix, self.l_scale)
+        elif self.prop_type == "beamsplitter":
+            laser_pulse = _split_beam(laser_pulse, self.transmitted_fraction)
 
         laser_pulse.update_photon_positions()
         return laser_pulse
@@ -176,4 +180,48 @@ def _prop_abcd_lct(laser_pulse, abcd_mat, l_scale):
         )
 
     laser_pulse.resize_laser_mesh()
+    return laser_pulse
+
+
+def _split_beam(laser_pulse, transmitted_fraction):
+    # Assume no loss to reflective layer absorption
+
+    for i in np.arange(laser_pulse.nslice):
+
+        thisSlice = laser_pulse.slice[i]
+        wfr0 = thisSlice.wfr
+        init_n_photons = thisSlice.n_photons_2d.mesh
+
+        intensity_2d = srwutil.calc_int_from_elec(wfr0)
+        phase_1d = srwlib.array("d", [0] * wfr0.mesh.nx * wfr0.mesh.ny)
+        srwl.CalcIntFromElecField(phase_1d, wfr0, 0, 4, 3, wfr0.mesh.eStart, 0, 0)
+        phase_2d = (
+            np.array(phase_1d)
+            .reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
+            .astype(np.float64)
+        )
+
+        thisSlice.n_photons_2d.mesh = init_n_photons * transmitted_fraction
+        split_intensity = intensity_2d * transmitted_fraction
+
+        split_e_norm = np.sqrt(2.0 * split_intensity / (const.c * const.epsilon_0))
+        new_re0_ex = np.multiply(split_e_norm, np.cos(phase_2d))
+        new_im0_ex = np.multiply(split_e_norm, np.sin(phase_2d))
+        new_re0_ey = np.zeros(np.shape(new_re0_ex))
+        new_im0_ey = np.zeros(np.shape(new_im0_ex))
+
+        x = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
+        y = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
+
+        # remake the wavefront
+        thisSlice.wfr = srwutil.make_wavefront(
+            new_re0_ex,
+            new_im0_ex,
+            new_re0_ey,
+            new_im0_ey,
+            thisSlice.photon_e_ev,
+            x,
+            y,
+        )
+
     return laser_pulse
