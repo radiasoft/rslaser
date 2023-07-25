@@ -52,6 +52,17 @@ class Lens_lct(Element):
         )
 
 
+class Beamsplitter(Element):
+    def __init__(self, transmitted_fraction):
+        self.transmitted_fraction = transmitted_fraction
+        self.prop_type = "beamsplitter"
+
+        if (self.transmitted_fraction < 0.0) or (self.transmitted_fraction > 1.0):
+            raise ElementException(
+                f"Invalid transmitted fraction passed to beamsplitter"
+            )
+
+
 class Drift_srw(Element):
     def __init__(self, length):
         self.length = length

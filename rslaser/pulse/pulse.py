@@ -35,9 +35,7 @@ _LASER_PULSE_DEFAULTS = PKDict(
     num_sig_long=3.0,
     dist_waist=0,
     tau_fwhm=0.1 / const.c / math.sqrt(2.0),  # also tau_c: the chirped pulse length
-    tau_0=0.1
-    / const.c
-    / math.sqrt(2.0),  # Fourier-limited pulse length of a given spectral bandwidth
+    tau_0=0.1 / const.c / math.sqrt(2.0),
     pulseE=0.001,
     sigx_waist=1.0e-3,
     sigy_waist=1.0e-3,
@@ -87,7 +85,8 @@ class LaserPulse(ValidatorBase):
                 dw0y (float): vertical variation in waist size [m]
                 dzwx (float): location (in z) of horizontal waist [m]
                 dzwy (float): location (in z) of vertical waist [m]
-                tau_fwhm (float): FWHM laser pulse length [s]
+                tau_fwhm (float): FWHM laser pulse length [s] (this is electric profile) "stretched pulse duration"
+                tau_0 (float): Fourier-limited duration [s] (this is electric profile)
                 pulseE (float): total laser pulse energy [J]
                 z_center (float): # longitudinal location of pulse center [m]
                 x_shift (float): horizontal shift of the spot center [m]
@@ -139,8 +138,14 @@ class LaserPulse(ValidatorBase):
         assert (
             params.tau_fwhm >= params.tau_0
         ), "ERROR -- Invalid pulse length parameters provided"
-        # positive chirp parameter, b, where b^2 = (tau_c / tau_0)^2 - 1
-        self.initial_chirp = np.sqrt((params.tau_fwhm / params.tau_0) ** 2.0 - 1.0)
+
+        tau_fwhm_intensity_profile = params.tau_fwhm * np.sqrt(2.0)
+        tau_0_intensity_profile = params.tau_0 * np.sqrt(2.0)
+
+        alpha = 2.0 * np.log(2.0)
+        self.initial_chirp = alpha / (
+            tau_fwhm_intensity_profile * tau_0_intensity_profile
+        )
 
         for i in range(params.nslice):
             # add the slices; each (slowly) instantiates an SRW wavefront object
@@ -705,7 +710,12 @@ class LaserPulseSlice(ValidatorBase):
             -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
         )
 
-        chirp = (2.0 * np.log(2.0)) / (params.tau_fwhm * params.tau_0)
+        tau_fwhm_intensity_profile = params.tau_fwhm * np.sqrt(2.0)  # / np.sqrt(2.0)
+        tau_0_intensity_profile = params.tau_0 * np.sqrt(2.0)  # / np.sqrt(2.0)
+
+        alpha = 2.0 * np.log(2.0)  # natural log
+        chirp = alpha / (tau_fwhm_intensity_profile * tau_0_intensity_profile)
+
         nu = (const.c / self._lambda0) + (chirp / np.pi) * (self._pulse_pos / const.c)
         self._lambda = const.c / nu
         self.photon_e_ev = units.calculate_phE_from_lambda0(self._lambda) / const.e

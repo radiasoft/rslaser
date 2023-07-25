@@ -15,8 +15,6 @@ from scipy.interpolate import RectBivariateSpline, RegularGridInterpolator
 from scipy.interpolate import splrep, splev
 from scipy.optimize import curve_fit
 from scipy.special import gamma
-
-# from scipy.special import exp1
 from rsmath import lct as rslct
 from rslaser.utils.validator import ValidatorBase
 from rslaser.utils import srwl_uti_data as srwutil
@@ -272,7 +270,7 @@ class Crystal(Element):
         for j in range(self.nslice):
             thisSlice = self.slice[j]
             dx = (
-                2.0 * thisSlice.population_inversion.mesh_extent
+                2.0 * thisSlice.population_inversion.mesh_extent * 1.15
             ) / thisSlice.population_inversion.n_cells
             cell_area = dx**2.0 * thisSlice.length
             trans_excited_states += thisSlice.pop_inversion_mesh * cell_area
@@ -384,8 +382,8 @@ class CrystalSlice(Element):
             if "pop_inversion" in k:
                 self.population_inversion[k.replace("pop_inversion_", "")] = params[k]
         x = np.linspace(
-            -self.population_inversion.mesh_extent,
-            self.population_inversion.mesh_extent,
+            -self.population_inversion.mesh_extent * 1.15,
+            self.population_inversion.mesh_extent * 1.15,
             self.population_inversion.n_cells,
         )
         xv, yv = np.meshgrid(x, x)
@@ -396,21 +394,11 @@ class CrystalSlice(Element):
             right=self._right_pump,
         )[self.population_inversion.pump_type](nslice, xv, yv)
 
-        pop_inversion_mesh = np.zeros((len(x), len(x)))
+        excited_states = np.zeros((len(x), len(x)))
         for param_set in param_set_array:
             z = param_set[0]
             slice_front = param_set[1]
             slice_end = param_set[2]
-
-            # calculate correction factor for representing a gaussian pulse with a series of flat-top slices
-            correction_factor = (
-                np.exp(-self.population_inversion.crystal_alpha * slice_front)
-                - np.exp(-self.population_inversion.crystal_alpha * slice_end)
-            ) / (
-                np.exp(-self.population_inversion.crystal_alpha * z)
-                * self.length
-                * self.population_inversion.crystal_alpha
-            )
 
             # integrate super-gaussian
             g_order = self.population_inversion.pump_gaussian_order
@@ -422,17 +410,19 @@ class CrystalSlice(Element):
             seed_wavelength = 800.0  # [nm]
             fraction_to_heating = (seed_wavelength - pump_wavelength) / seed_wavelength
 
+            dz = self.length
+
             energy_term = (
                 (self.population_inversion.pump_wavelength / (const.h * const.c))
                 * (1.0 - fraction_to_heating)
                 * self.population_inversion.pump_energy
             )
+
             alpha_term = (
-                1
-                - np.exp(
-                    -self.population_inversion.crystal_alpha * self.length * nslice
-                )
-            ) * np.exp(-self.population_inversion.crystal_alpha * z)
+                np.exp(-self.population_inversion.crystal_alpha * slice_front)
+                - np.exp(-self.population_inversion.crystal_alpha * slice_end)
+            ) / (self.population_inversion.crystal_alpha * dz)
+
             radial_term = np.exp(
                 -2.0
                 * (
@@ -444,21 +434,17 @@ class CrystalSlice(Element):
                 )
                 ** g_order
             )
-            dz = self.length * nslice
 
             # Create mesh of [num_excited_states/m^3] pop_inversion_mesh
             temp_mesh = (
-                energy_term
-                * alpha_term
-                * radial_term
-                * correction_factor
-                * integral_factor
-                / dz
+                energy_term * alpha_term * radial_term * integral_factor / (dz * nslice)
             )
 
-            pop_inversion_mesh += temp_mesh.astype("float64")
+            excited_states += temp_mesh.astype("float64")
 
-        self.pop_inversion_mesh = pop_inversion_mesh
+        self.pop_inversion_mesh = (
+            2.0 * excited_states
+        )  # population inversion = N2 - N1 = 2* (number of excited states)
 
     def _propagate_attenuate(self, laser_pulse, calc_gain, nl_kick):
         # n_x = wfront.mesh.nx  #  nr of grid points in x
@@ -486,30 +472,33 @@ class CrystalSlice(Element):
 
     def _propagate_n0n2_lct(self, laser_pulse, calc_gain, nl_kick):
         nslices_pulse = len(laser_pulse.slice)
-        L_cryst = self.length
+
+        dz = self.length
         n0 = self.n0
         n2 = self.n2
-        l_scale = self.l_scale
-
-        photon_e_ev = laser_pulse.photon_e_ev
+        l_scale = (
+            np.sqrt(np.pi) * laser_pulse.sigx_waist * np.sqrt(2.0)
+        )  # sigx_waist = w0/np.sqrt(2.0)
 
         ##Convert energy to wavelength
         hc_ev_um = 1.23984198  # hc [eV*um]
-        phLambda = (
-            hc_ev_um / photon_e_ev * 1e-6
-        )  # wavelength corresponding to photon_e_ev in meters
 
         # calculate components of ABCD matrix corrected with wavelength and scale factor for use in LCT algorithm
         gamma = np.sqrt(n2 / n0)
-        A = np.cos(gamma * L_cryst)
-        B = phLambda * L_cryst / (l_scale**2) * np.sinc(gamma * L_cryst / np.pi)
-        C = -gamma * np.sin(gamma * L_cryst) / phLambda * (l_scale**2)
-        D = np.cos(gamma * L_cryst)
-        abcd_mat_cryst = np.array([[A, B], [C, D]])
+        A = np.cos(gamma * dz)
+        D = np.cos(gamma * dz)
 
         for i in np.arange(nslices_pulse):
-            # i = 0
             thisSlice = laser_pulse.slice[i]
+
+            phLambda = (
+                hc_ev_um / thisSlice.photon_e_ev * 1e-6
+            )  # wavelength corresponding to photon_e_ev in meters
+
+            B = (dz * np.sinc(gamma * dz / np.pi)) * (phLambda / l_scale**2)
+            C = (-n0 * gamma * np.sin(gamma * dz)) * (l_scale**2 / phLambda)
+            abcd_mat_cryst = np.array([[A, B], [C, D]])
+
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
             if nl_kick:
@@ -545,9 +534,6 @@ class CrystalSlice(Element):
             in_signal_2d_x = (dX_scale, dY_scale, Etot0_2d_x)
             in_signal_2d_y = (dX_scale, dY_scale, Etot0_2d_y)
 
-            assert np.shape(Etot0_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
-            assert np.shape(Etot0_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
-
             # calculate 2D LCTs
             dX_out, dY_out, out_signal_2d_x = rslct.apply_lct_2d_sep(
                 abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_x
@@ -555,10 +541,6 @@ class CrystalSlice(Element):
             dX_out, dY_out, out_signal_2d_y = rslct.apply_lct_2d_sep(
                 abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_y
             )
-
-            assert np.shape(out_signal_2d_x) == np.shape(
-                out_signal_2d_y
-            ), "ERROR -- x and y output not equal"
 
             re_out_signal_2d_x = np.real(out_signal_2d_x)
             x_total = (np.shape(re_out_signal_2d_x)[0] - 1) * dX_out
@@ -620,6 +602,7 @@ class CrystalSlice(Element):
                 y,
             )
 
+        laser_pulse.resize_laser_mesh()
         return laser_pulse
 
     def _propagate_abcd_lct(self, laser_pulse, calc_gain, nl_kick):
@@ -762,7 +745,7 @@ class CrystalSlice(Element):
 
     def _propagate_n0n2_srw(self, laser_pulse, calc_gain, nl_kick):
         nslices = len(laser_pulse.slice)
-        L_cryst = self.length
+        L_slice = self.length
         n0 = self.n0
         n2 = self.n2
 
@@ -781,11 +764,11 @@ class CrystalSlice(Element):
 
             else:
                 gamma = np.sqrt(n2 / n0)
-                A = np.cos(gamma * L_cryst)
-                B = L_cryst * np.sinc(gamma * L_cryst / np.pi)
-                # B = (1 / gamma) * np.sin(gamma * L_cryst)
-                C = -gamma * np.sin(gamma * L_cryst)
-                D = np.cos(gamma * L_cryst)
+                A = np.cos(gamma * L_slice)
+                B = L_slice * np.sinc(gamma * L_slice / np.pi)
+                # B = (1 / gamma) * np.sin(gamma * L_slice)
+                C = -n0 * gamma * np.sin(gamma * L_slice)
+                D = np.cos(gamma * L_slice)
                 f1 = B / (1 - A)
                 L = B
                 f2 = B / (1 - D)
@@ -844,8 +827,8 @@ class CrystalSlice(Element):
             temp_array = np.copy(self.pop_inversion_mesh)
 
             a_x = np.linspace(
-                -self.population_inversion.mesh_extent,
-                self.population_inversion.mesh_extent,
+                -self.population_inversion.mesh_extent * 1.15,
+                self.population_inversion.mesh_extent * 1.15,
                 self.population_inversion.n_cells,
             )
             a_y = a_x
@@ -859,8 +842,8 @@ class CrystalSlice(Element):
             a_x = a.x
             a_y = a.y
             b_x = np.linspace(
-                -self.population_inversion.mesh_extent,
-                self.population_inversion.mesh_extent,
+                -self.population_inversion.mesh_extent * 1.15,
+                self.population_inversion.mesh_extent * 1.15,
                 self.population_inversion.n_cells,
             )
             b_y = b_x
@@ -877,11 +860,14 @@ class CrystalSlice(Element):
             dx = (
                 2.0
                 * self.population_inversion.mesh_extent
+                * 1.15
                 / self.population_inversion.n_cells
             )
             b_xv, b_yv = np.meshgrid(b_x, b_y)
             b_r = np.sqrt(b_xv**2.0 + b_yv**2.0)
-            temp_array[b_r > self.population_inversion.mesh_extent - 0.9 * dx] = 0.0
+            temp_array[
+                b_r > self.population_inversion.mesh_extent * 1.15 - 0.9 * dx
+            ] = 0.0
 
         return temp_array
 
