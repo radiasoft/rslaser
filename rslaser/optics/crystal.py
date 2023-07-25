@@ -757,7 +757,7 @@ class CrystalSlice(Element):
                 thisSlice = self.nl_kick(thisSlice)
 
             if n2 == 0:
-                optDrift = srwlib.SRWLOptD(L_cryst / n0)
+                optDrift = srwlib.SRWLOptD(L_slice / n0)
                 propagParDrift = [0, 0, 1.0, 0, 0, 1.0, 1.0, 1.0, 1.0, 0, 0, 0]
                 # propagParDrift = [0, 0, 1., 0, 0, 1.1, 1.2, 1.1, 1.2, 0, 0, 0]
                 optBL = srwlib.SRWLOptC([optDrift], [propagParDrift])
