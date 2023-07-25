@@ -472,30 +472,33 @@ class CrystalSlice(Element):
 
     def _propagate_n0n2_lct(self, laser_pulse, calc_gain, nl_kick):
         nslices_pulse = len(laser_pulse.slice)
-        L_cryst = self.length
+
+        dz = self.length
         n0 = self.n0
         n2 = self.n2
-        l_scale = self.l_scale
-
-        photon_e_ev = laser_pulse.photon_e_ev
+        l_scale = (
+            np.sqrt(np.pi) * laser_pulse.sigx_waist * np.sqrt(2.0)
+        )  # sigx_waist = w0/np.sqrt(2.0)
 
         ##Convert energy to wavelength
         hc_ev_um = 1.23984198  # hc [eV*um]
-        phLambda = (
-            hc_ev_um / photon_e_ev * 1e-6
-        )  # wavelength corresponding to photon_e_ev in meters
 
         # calculate components of ABCD matrix corrected with wavelength and scale factor for use in LCT algorithm
         gamma = np.sqrt(n2 / n0)
-        A = np.cos(gamma * L_cryst)
-        B = phLambda * L_cryst / (l_scale**2) * np.sinc(gamma * L_cryst / np.pi)
-        C = -gamma * np.sin(gamma * L_cryst) / phLambda * (l_scale**2)
-        D = np.cos(gamma * L_cryst)
-        abcd_mat_cryst = np.array([[A, B], [C, D]])
+        A = np.cos(gamma * dz)
+        D = np.cos(gamma * dz)
 
         for i in np.arange(nslices_pulse):
-            # i = 0
             thisSlice = laser_pulse.slice[i]
+
+            phLambda = (
+                hc_ev_um / thisSlice.photon_e_ev * 1e-6
+            )  # wavelength corresponding to photon_e_ev in meters
+
+            B = (dz * np.sinc(gamma * dz / np.pi)) * (phLambda / l_scale**2)
+            C = (-n0 * gamma * np.sin(gamma * dz)) * (l_scale**2 / phLambda)
+            abcd_mat_cryst = np.array([[A, B], [C, D]])
+
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
             if nl_kick:
@@ -531,9 +534,6 @@ class CrystalSlice(Element):
             in_signal_2d_x = (dX_scale, dY_scale, Etot0_2d_x)
             in_signal_2d_y = (dX_scale, dY_scale, Etot0_2d_y)
 
-            assert np.shape(Etot0_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
-            assert np.shape(Etot0_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
-
             # calculate 2D LCTs
             dX_out, dY_out, out_signal_2d_x = rslct.apply_lct_2d_sep(
                 abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_x
@@ -541,10 +541,6 @@ class CrystalSlice(Element):
             dX_out, dY_out, out_signal_2d_y = rslct.apply_lct_2d_sep(
                 abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_y
             )
-
-            assert np.shape(out_signal_2d_x) == np.shape(
-                out_signal_2d_y
-            ), "ERROR -- x and y output not equal"
 
             re_out_signal_2d_x = np.real(out_signal_2d_x)
             x_total = (np.shape(re_out_signal_2d_x)[0] - 1) * dX_out
@@ -606,6 +602,7 @@ class CrystalSlice(Element):
                 y,
             )
 
+        laser_pulse.resize_laser_mesh()
         return laser_pulse
 
     def _propagate_abcd_lct(self, laser_pulse, calc_gain, nl_kick):
@@ -748,7 +745,7 @@ class CrystalSlice(Element):
 
     def _propagate_n0n2_srw(self, laser_pulse, calc_gain, nl_kick):
         nslices = len(laser_pulse.slice)
-        L_cryst = self.length
+        L_slice = self.length
         n0 = self.n0
         n2 = self.n2
 
@@ -767,11 +764,11 @@ class CrystalSlice(Element):
 
             else:
                 gamma = np.sqrt(n2 / n0)
-                A = np.cos(gamma * L_cryst)
-                B = L_cryst * np.sinc(gamma * L_cryst / np.pi)
-                # B = (1 / gamma) * np.sin(gamma * L_cryst)
-                C = -gamma * np.sin(gamma * L_cryst)
-                D = np.cos(gamma * L_cryst)
+                A = np.cos(gamma * L_slice)
+                B = L_slice * np.sinc(gamma * L_slice / np.pi)
+                # B = (1 / gamma) * np.sin(gamma * L_slice)
+                C = -n0 * gamma * np.sin(gamma * L_slice)
+                D = np.cos(gamma * L_slice)
                 f1 = B / (1 - A)
                 L = B
                 f2 = B / (1 - D)
