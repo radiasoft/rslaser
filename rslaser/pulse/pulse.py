@@ -139,8 +139,8 @@ class LaserPulse(ValidatorBase):
             params.tau_fwhm >= params.tau_0
         ), "ERROR -- Invalid pulse length parameters provided"
 
-        tau_fwhm_intensity_profile = params.tau_fwhm / np.sqrt(2.0)
-        tau_0_intensity_profile = params.tau_0 / np.sqrt(2.0)
+        tau_fwhm_intensity_profile = params.tau_fwhm * np.sqrt(2.0)
+        tau_0_intensity_profile = params.tau_0 * np.sqrt(2.0)
 
         alpha = 2.0 * np.log(2.0)
         self.initial_chirp = alpha / (
@@ -710,13 +710,13 @@ class LaserPulseSlice(ValidatorBase):
             -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
         )
 
-        tau_fwhm_intensity_profile = params.tau_fwhm / np.sqrt(2.0)
-        tau_0_intensity_profile = params.tau_0 / np.sqrt(2.0)
+        tau_fwhm_intensity_profile = params.tau_fwhm * np.sqrt(2.0)  # / np.sqrt(2.0)
+        tau_0_intensity_profile = params.tau_0 * np.sqrt(2.0)  # / np.sqrt(2.0)
 
         alpha = 2.0 * np.log(2.0)  # natural log
         chirp = alpha / (tau_fwhm_intensity_profile * tau_0_intensity_profile)
 
-        nu = (const.c / self._lambda0) + (chirp / (np.pi)) * (self._pulse_pos / const.c)
+        nu = (const.c / self._lambda0) + (chirp / np.pi) * (self._pulse_pos / const.c)
         self._lambda = const.c / nu
         self.photon_e_ev = units.calculate_phE_from_lambda0(self._lambda) / const.e
 
