@@ -5,6 +5,7 @@ Copyright (c) 2021 RadiaSoft LLC. All rights reserved
 import array
 import math
 import cmath
+import copy
 import numpy as np
 from pykern.pkdebug import pkdp, pkdlog
 from pykern.pkcollections import PKDict
@@ -45,6 +46,7 @@ _LASER_PULSE_DEFAULTS = PKDict(
     mx=0,
     my=0,
     phase_flatten_cutoff=0.85,
+    d_lambda_RMS=0.0,
 )
 
 _ENVELOPE_DEFAULTS = PKDict(
@@ -139,14 +141,19 @@ class LaserPulse(ValidatorBase):
             params.tau_fwhm >= params.tau_0
         ), "ERROR -- Invalid pulse length parameters provided"
 
-        tau_fwhm_intensity_profile = params.tau_fwhm * np.sqrt(2.0)
-        tau_0_intensity_profile = params.tau_0 * np.sqrt(2.0)
+        tau_fwhm_intensity_profile = params.tau_fwhm / np.sqrt(2.0)
+        tau_0_intensity_profile = params.tau_0 / np.sqrt(2.0)
 
         alpha = 2.0 * np.log(2.0)
         self.initial_chirp = alpha / (
             tau_fwhm_intensity_profile * tau_0_intensity_profile
         )
 
+        d_nu_fwhm = (2.0 * np.log(2.0)) / (np.pi * tau_0_intensity_profile)
+        nu_fraction = d_nu_fwhm / (const.c / self._lambda0)
+        self.d_lambda_RMS = nu_fraction * self._lambda0 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        params.d_lambda_RMS = self.d_lambda_RMS
+        
         for i in range(params.nslice):
             # add the slices; each (slowly) instantiates an SRW wavefront object
             self.slice.append(LaserPulseSlice(i, params.copy(), files=self.files))
@@ -691,10 +698,10 @@ class LaserPulseSlice(ValidatorBase):
         self.sigx_waist = params.sigx_waist
         self.sigy_waist = params.sigy_waist
         self.num_sig_trans = params.num_sig_trans
-        # self.z_waist = params.z_waist
         self.nslice = params.nslice
         self.nx_slice = params.nx_slice
         self.dist_waist = params.dist_waist
+        self.d_lambda_RMS = params.d_lambda_RMS
 
         self.pulseE_slice = (
             params.pulseE / self.nslice
@@ -705,13 +712,12 @@ class LaserPulseSlice(ValidatorBase):
         self.ds = (
             2 * params.num_sig_long * self.sig_s / params.nslice
         )  # longitudinal spacing between slices
-        # self._pulse_pos = self.dist_waist - params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
         self._pulse_pos = (
             -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
         )
 
-        tau_fwhm_intensity_profile = params.tau_fwhm * np.sqrt(2.0)  # / np.sqrt(2.0)
-        tau_0_intensity_profile = params.tau_0 * np.sqrt(2.0)  # / np.sqrt(2.0)
+        tau_fwhm_intensity_profile = params.tau_fwhm / np.sqrt(2.0)
+        tau_0_intensity_profile = params.tau_0 / np.sqrt(2.0)
 
         alpha = 2.0 * np.log(2.0)  # natural log
         chirp = alpha / (tau_fwhm_intensity_profile * tau_0_intensity_profile)
@@ -720,25 +726,54 @@ class LaserPulseSlice(ValidatorBase):
         self._lambda = const.c / nu
         self.photon_e_ev = units.calculate_phE_from_lambda0(self._lambda) / const.e
 
-        constConvRad = 1.23984186e-06 / (
-            4 * 3.1415926536
-        )  ##conversion from energy to 1/wavelength
-        rmsAngDiv_x = constConvRad / (
-            self.photon_e_ev * self.sigx_waist
-        )  ##RMS angular divergence [rad]
-        rmsAngDiv_y = constConvRad / (self.photon_e_ev * self.sigy_waist)
-
-        sigrL_x = math.sqrt(self.sigx_waist**2 + (self.dist_waist * rmsAngDiv_x) ** 2)
-        sigrL_y = math.sqrt(self.sigy_waist**2 + (self.dist_waist * rmsAngDiv_y) ** 2)
-
         self._wavefront(params, files)
 
-        # Calculate the initial number of photons in 2d grid of each slice from pulseE_slice
-        self.n_photons_2d = self.calc_init_n_photons()  # 2d array
+        # Calculate the initial number of photons in each slice from pulseE_slice
+        self.n_photons_2d = self.calc_init_n_photons()
 
         self.initial_laser_xy = PKDict(
             x=np.linspace(self.wfr.mesh.xStart, self.wfr.mesh.xFin, self.wfr.mesh.nx),
             y=np.linspace(self.wfr.mesh.yStart, self.wfr.mesh.yFin, self.wfr.mesh.ny),
+        )
+        
+        self.bandwidth_slice = []
+        self.bw_nslice = 6
+        for i in range(self.bw_nslice):
+            self.bandwidth_slice.append(BandwidthSlice(i, 
+                                                       np.copy(self.d_lambda_RMS), 
+                                                       np.copy(self._lambda), 
+                                                       copy.deepcopy(self.wfr),
+                                                       copy.deepcopy(self.initial_laser_xy),
+                                                       np.copy(self.pulseE_slice),
+                                                       copy.deepcopy(self.n_photons_2d),
+                                                      )
+                                       )
+        
+        # fraction of photons contained in the sub-slice corresponding to the central wavelength of that laser pulse slice
+        # is an integral from integral_start to integral_end
+        sigma = self.d_lambda_RMS * np.sqrt(2.0)        
+        erf_arg1 = (-0.5*self.d_lambda_RMS) / (np.sqrt(2.0) * sigma)
+        erf_arg2 = (0.5*self.d_lambda_RMS) / (np.sqrt(2.0) * sigma)
+        subslice_fraction = 0.5 * (special.erf(erf_arg2) - special.erf(erf_arg1))
+        
+        self.pulseE_slice *= subslice_fraction
+        self.n_photons_2d.mesh *= subslice_fraction
+
+        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(self.wfr)
+        
+        re0_2d_ex *= np.sqrt(subslice_fraction)
+        im0_2d_ex *= np.sqrt(subslice_fraction)
+        re0_2d_ey *= np.sqrt(subslice_fraction)
+        im0_2d_ey *= np.sqrt(subslice_fraction)
+            
+        self.wfr = srwutil.make_wavefront(
+            re0_2d_ex,
+            im0_2d_ex,
+            re0_2d_ey,
+            im0_2d_ey,
+            self.photon_e_ev,
+            self.initial_laser_xy.x,
+            self.initial_laser_xy.y,
         )
 
     def _wavefront(self, params, files):
@@ -915,6 +950,7 @@ class LaserPulseSlice(ValidatorBase):
                 * (special.erf(end2) - special.erf(end1))
             )
         )
+        
         # Get slice value of photon_e (will be in eV)
         photon_e = self.photon_e_ev * const.e
 
@@ -926,6 +962,78 @@ class LaserPulseSlice(ValidatorBase):
             y=np.linspace(self.wfr.mesh.yStart, self.wfr.mesh.yFin, self.wfr.mesh.ny),
         )
         return n_photons_2d
+
+
+class BandwidthSlice(ValidatorBase):
+    """
+    This class represents the bandwidth of each slice in a laser pulse.
+    Each of our existing laser pulse slices are divided into 7 overlapping 
+    slices, (the parent/original + 6 additional) with central wavelength values of
+        lambda_c
+        lambda_c +/- 1 * d_lambda_RMS
+        lambda_c +/- 2 * d_lambda_RMS
+        lambda_c +/- 3 * d_lambda_RMS
+    where lambda_c is the local value of the chirped wavelength for the parent.
+
+    Args:
+        slice_index (int): index of slice
+        LaserSliceCopy: a copy of the slice these bandwidth slices beling to
+
+    Returns:
+        instance of class
+    """
+
+    _INPUT_ERROR = InvalidLaserPulseInputError
+    _DEFAULTS = _LASER_PULSE_DEFAULTS
+
+
+    def __init__(self, slice_index, d_lambda_RMS, slice_lambda, wfr, initial_laser_xy, original_pulseE_slice, original_n_photons_2d):
+        
+        self._validate_type(slice_index, int, "slice_index")
+        self.slice_index = slice_index
+        
+        self.wfr = wfr
+        self.initial_laser_xy = initial_laser_xy
+        self.pulseE_slice = original_pulseE_slice
+        self.n_photons_2d = original_n_photons_2d
+        
+        central_subslice_lambda = slice_lambda
+        self.rms_int = np.ceil(2.0 * (self.slice_index + 1.0e-3) / 3.5)
+        self.sign = 2.0 * (-self.slice_index % -2) + 1
+        
+        self._lambda = central_subslice_lambda + self.sign * self.rms_int * d_lambda_RMS
+        self.photon_e_ev = units.calculate_phE_from_lambda0(self._lambda) / const.e
+
+        # fraction of photons contained in the sub-slice corresponding to the central wavelength of that laser pulse slice
+        # is an integral from integral_start to integral_end
+        sigma = d_lambda_RMS * np.sqrt(2.0)
+        if self.rms_int==3:
+            erf_arg1 = -1.0 * np.inf
+            erf_arg2 = ((-1.0 * self.rms_int + 0.5) * d_lambda_RMS) / (np.sqrt(2.0) * sigma)
+        else:
+            erf_arg1 = ((self.sign * self.rms_int - 0.5) * d_lambda_RMS) / (np.sqrt(2.0) * sigma)
+            erf_arg2 = ((self.sign * self.rms_int + 0.5) * d_lambda_RMS) / (np.sqrt(2.0) * sigma)
+        subslice_fraction = 0.5 * (special.erf(erf_arg2) - special.erf(erf_arg1))
+        
+        self.pulseE_slice *= subslice_fraction
+        self.n_photons_2d.mesh *= subslice_fraction
+
+        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(self.wfr)
+        
+        re0_2d_ex *= np.sqrt(subslice_fraction)
+        im0_2d_ex *= np.sqrt(subslice_fraction)
+        re0_2d_ey *= np.sqrt(subslice_fraction)
+        im0_2d_ey *= np.sqrt(subslice_fraction)
+            
+        self.wfr = srwutil.make_wavefront(
+            re0_2d_ex,
+            im0_2d_ex,
+            re0_2d_ey,
+            im0_2d_ey,
+            self.photon_e_ev,
+            self.initial_laser_xy.x,
+            self.initial_laser_xy.y,
+        )
 
 
 class LaserPulseEnvelope(ValidatorBase):
