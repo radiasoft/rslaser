@@ -446,30 +446,6 @@ class CrystalSlice(Element):
             2.0 * excited_states
         )  # population inversion = N2 - N1 = 2* (number of excited states)
 
-    def _propagate_attenuate(self, laser_pulse, calc_gain, nl_kick):
-        # n_x = wfront.mesh.nx  #  nr of grid points in x
-        # n_y = wfront.mesh.ny  #  nr of grid points in y
-        # sig_cr_sec = np.ones((n_x, n_y), dtype=np.float32)
-        # pop_inv = self.pop_inv
-        # n0_phot = 0.0 *sig_cr_sec # incident photon density (3D), at a given transv. loc-n
-        # eta = n0_phot *c_light *tau_pulse
-        # gamma_degen = 1.0
-        # en_gain = np.log( 1. +np.exp(sig_cr_sec *pop_inv *element.length) *(
-        #             np.exp(gamma_degen *sig_cr_sec *eta) -1.0) ) /(gamma_degen *sig_cr_sec *eta)
-        # return laser_pulse
-        raise NotImplementedError(
-            f'{self}.propagate() with prop_type="attenuate" is not currently supported'
-        )
-
-    def _propagate_placeholder(self, laser_pulse, calc_gain, nl_kick):
-        # nslices = len(laser_pulse.slice)
-        # for i in np.arange(nslices):
-        #     print ('Pulse slice ', i+1, ' of ', nslices, ' propagated through crystal slice.')
-        # return laser_pulse
-        raise NotImplementedError(
-            f'{self}.propagate() with prop_type="placeholder" is not currently supported'
-        )
-
     def _propagate_n0n2_lct(self, laser_pulse, calc_gain, nl_kick):
         nslices_pulse = len(laser_pulse.slice)
 
@@ -488,13 +464,11 @@ class CrystalSlice(Element):
         A = np.cos(gamma * dz)
         D = np.cos(gamma * dz)
 
-        for i in np.arange(nslices_pulse):
-            thisSlice = laser_pulse.slice[i]
+        for j in np.arange(laser_pulse.nslice):
+            thisSlice = laser_pulse.slice[j]
 
-            phLambda = (
-                hc_ev_um / thisSlice.photon_e_ev * 1e-6
-            )  # wavelength corresponding to photon_e_ev in meters
-
+            # wavelength corresponding to photon_e_ev in meters
+            phLambda = hc_ev_um / thisSlice.photon_e_ev * 1e-6
             B = (dz * np.sinc(gamma * dz / np.pi)) * (phLambda / l_scale**2)
             C = (-n0 * gamma * np.sin(gamma * dz)) * (l_scale**2 / phLambda)
             abcd_mat_cryst = np.array([[A, B], [C, D]])
@@ -504,242 +478,76 @@ class CrystalSlice(Element):
             if nl_kick:
                 thisSlice = self.nl_kick(thisSlice)
 
-            wfr0 = thisSlice.wfr
-            re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(
-                thisSlice.wfr
+            thisSlice.wfr = _propagate_lct(
+                l_scale, abcd_mat_cryst, thisSlice.photon_e_ev, thisSlice.wfr
             )
 
-            xvals_slice = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
-            yvals_slice = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
 
-            mesh_old = {
-                "re0_2d_ex": re0_2d_ex,
-                "im0_2d_ex": im0_2d_ex,
-                "re0_2d_ey": re0_2d_ey,
-                "im0_2d_ey": im0_2d_ey,
-            }
-            xvals_slice, yvals_slice, mesh_new = _interp_to_odd(
-                xvals_slice, yvals_slice, mesh_old
-            )
+                # wavelength corresponding to photon_e_ev in meters
+                phLambda = hc_ev_um / thisSubSlice.photon_e_ev * 1e-6
+                B = (dz * np.sinc(gamma * dz / np.pi)) * (phLambda / l_scale**2)
+                C = (-n0 * gamma * np.sin(gamma * dz)) * (l_scale**2 / phLambda)
+                abcd_mat_cryst = np.array([[A, B], [C, D]])
 
-            Etot0_2d_x = mesh_new["re0_2d_ex"] + 1j * mesh_new["im0_2d_ex"]
-            Etot0_2d_y = mesh_new["re0_2d_ey"] + 1j * mesh_new["im0_2d_ey"]
+                if calc_gain:
+                    thisSubSlice = self.calc_gain(thisSubSlice)
+                if nl_kick:
+                    thisSubSlice = self.nl_kick(thisSubSlice)
 
-            dX = xvals_slice[1] - xvals_slice[0]  # horizontal spacing [m]
-            dX_scale = dX / l_scale
-            dY = yvals_slice[1] - yvals_slice[0]  # vertical spacing [m]
-            dY_scale = dY / l_scale
-
-            # define horizontal and vertical input signals
-            in_signal_2d_x = (dX_scale, dY_scale, Etot0_2d_x)
-            in_signal_2d_y = (dX_scale, dY_scale, Etot0_2d_y)
-
-            # calculate 2D LCTs
-            dX_out, dY_out, out_signal_2d_x = rslct.apply_lct_2d_sep(
-                abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_x
-            )
-            dX_out, dY_out, out_signal_2d_y = rslct.apply_lct_2d_sep(
-                abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_y
-            )
-
-            re_out_signal_2d_x = np.real(out_signal_2d_x)
-            x_total = (np.shape(re_out_signal_2d_x)[0] - 1) * dX_out
-            y_total = (np.shape(re_out_signal_2d_x)[1] - 1) * dY_out
-            xold = np.linspace(
-                -x_total / 2.0, x_total / 2.0, np.shape(re_out_signal_2d_x)[0]
-            )
-            yold = np.linspace(
-                -y_total / 2.0, y_total / 2.0, np.shape(re_out_signal_2d_x)[1]
-            )
-
-            mesh_old_2 = {
-                "re_out_signal_2d_x": np.real(out_signal_2d_x),
-                "im_out_signal_2d_x": np.imag(out_signal_2d_x),
-                "re_out_signal_2d_y": np.real(out_signal_2d_y),
-                "im_out_signal_2d_y": np.imag(out_signal_2d_y),
-            }
-            xnew, ynew, mesh_new = _interp_to_odd(xold, yold, mesh_old_2)
-
-            if (
-                np.shape(re_out_signal_2d_x)[0] % 2 == 0
-                or np.shape(re_out_signal_2d_x)[1] % 2 == 0
-            ):
-                dX_out = np.mean(np.diff(xnew))
-                dY_out = np.mean(np.diff(ynew))
-
-            out_signal_2d_x = (
-                mesh_new["re_out_signal_2d_x"] + 1j * mesh_new["im_out_signal_2d_x"]
-            )
-            out_signal_2d_y = (
-                mesh_new["re_out_signal_2d_y"] + 1j * mesh_new["im_out_signal_2d_y"]
-            )
-
-            # extract propagated complex field and calculate corresponding x and y mesh arrays
-            # we assume same mesh for both components of E_field
-            hx = dX_out * l_scale
-            hy = dY_out * l_scale
-            ny, nx = np.shape(out_signal_2d_x)
-            local_xv = rslct.lct_abscissae(nx, hx)
-            local_yv = rslct.lct_abscissae(ny, hy)
-
-            # return to SRW wavefront form
-            re_ex = np.real(out_signal_2d_x)
-            im_ex = np.imag(out_signal_2d_x)
-            re_ey = np.real(out_signal_2d_y)
-            im_ey = np.imag(out_signal_2d_y)
-
-            x = np.linspace(np.min(local_xv), np.max(local_xv), nx)
-            y = np.linspace(np.min(local_xv), np.max(local_xv), ny)
-
-            # remake the wavefront
-            thisSlice.wfr = srwutil.make_wavefront(
-                re_ex,
-                im_ex,
-                re_ey,
-                im_ey,
-                thisSlice.photon_e_ev,
-                x,
-                y,
-            )
+                thisSubSlice.wfr = _propagate_lct(
+                    l_scale, abcd_mat_cryst, thisSubSlice.photon_e_ev, thisSubSlice.wfr
+                )
 
         laser_pulse.resize_laser_mesh()
         return laser_pulse
 
     def _propagate_abcd_lct(self, laser_pulse, calc_gain, nl_kick):
         nslices_pulse = len(laser_pulse.slice)
-        l_scale = self.l_scale
 
-        photon_e_ev = laser_pulse.photon_e_ev
+        l_scale = (
+            np.sqrt(np.pi) * laser_pulse.sigx_waist * np.sqrt(2.0)
+        )  # sigx_waist = w0/np.sqrt(2.0)
 
         ##Convert energy to wavelength
         hc_ev_um = 1.23984198  # hc [eV*um]
-        phLambda = (
-            hc_ev_um / photon_e_ev * 1e-6
-        )  # wavelength corresponding to photon_e_ev in meters
 
-        # rescale ABCD matrix with wavelength and scale factor for use in LCT algorithm
-        A = self.A
-        B = self.B * phLambda / (l_scale**2)
-        C = self.C / phLambda * (l_scale**2)
-        D = self.D
-        abcd_mat_cryst = np.array([[A, B], [C, D]])
+        for j in np.arange(laser_pulse.nslice):
+            thisSlice = laser_pulse.slice[j]
 
-        for i in np.arange(nslices_pulse):
-            thisSlice = laser_pulse.slice[i]
+            # wavelength corresponding to photon_e_ev in meters
+            phLambda = hc_ev_um / thisSlice.photon_e_ev * 1e-6
+            B = self.B * phLambda / (l_scale**2)
+            C = self.C / phLambda * (l_scale**2)
+            abcd_mat_cryst = np.array([[self.A, B], [C, self.D]])
 
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
             if nl_kick:
                 thisSlice = self.nl_kick(thisSlice)
 
-            wfr0 = thisSlice.wfr
-            re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(
-                thisSlice.wfr
+            thisSlice.wfr = _propagate_lct(
+                l_scale, abcd_mat_cryst, thisSlice.photon_e_ev, thisSlice.wfr
             )
 
-            xvals_slice = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
-            yvals_slice = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
 
-            mesh_old = {
-                "re0_2d_ex": re0_2d_ex,
-                "im0_2d_ex": im0_2d_ex,
-                "re0_2d_ey": re0_2d_ey,
-                "im0_2d_ey": im0_2d_ey,
-            }
-            xvals_slice, yvals_slice, mesh_new = _interp_to_odd(
-                xvals_slice, yvals_slice, mesh_old
-            )
+                # wavelength corresponding to photon_e_ev in meters
+                phLambda = hc_ev_um / thisSubSlice.photon_e_ev * 1e-6
+                B = self.B * phLambda / (l_scale**2)
+                C = self.C / phLambda * (l_scale**2)
+                abcd_mat_cryst = np.array([[self.A, B], [C, self.D]])
 
-            Etot0_2d_x = mesh_new["re0_2d_ex"] + 1j * mesh_new["im0_2d_ex"]
-            Etot0_2d_y = mesh_new["re0_2d_ey"] + 1j * mesh_new["im0_2d_ey"]
+                if calc_gain:
+                    thisSubSlice = self.calc_gain(thisSubSlice)
+                if nl_kick:
+                    thisSubSlice = self.nl_kick(thisSubSlice)
 
-            dX = xvals_slice[1] - xvals_slice[0]  # horizontal spacing [m]
-            dX_scale = dX / l_scale
-            dY = yvals_slice[1] - yvals_slice[0]  # vertical spacing [m]
-            dY_scale = dY / l_scale
-
-            # define horizontal and vertical input signals
-            in_signal_2d_x = (dX_scale, dY_scale, Etot0_2d_x)
-            in_signal_2d_y = (dX_scale, dY_scale, Etot0_2d_y)
-
-            assert np.shape(Etot0_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
-            assert np.shape(Etot0_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
-
-            # calculate 2D LCTs
-            dX_out, dY_out, out_signal_2d_x = rslct.apply_lct_2d_sep(
-                abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_x
-            )
-            dX_out, dY_out, out_signal_2d_y = rslct.apply_lct_2d_sep(
-                abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_y
-            )
-
-            assert np.shape(out_signal_2d_x) == np.shape(
-                out_signal_2d_y
-            ), "ERROR -- x and y output not equal"
-
-            re_out_signal_2d_x = np.real(out_signal_2d_x)
-            x_total = (np.shape(re_out_signal_2d_x)[0] - 1) * dX_out
-            y_total = (np.shape(re_out_signal_2d_x)[1] - 1) * dY_out
-            xold = np.linspace(
-                -x_total / 2.0, x_total / 2.0, np.shape(re_out_signal_2d_x)[0]
-            )
-            yold = np.linspace(
-                -y_total / 2.0, y_total / 2.0, np.shape(re_out_signal_2d_x)[1]
-            )
-
-            mesh_old_2 = {
-                "re_out_signal_2d_x": np.real(out_signal_2d_x),
-                "im_out_signal_2d_x": np.imag(out_signal_2d_x),
-                "re_out_signal_2d_y": np.real(out_signal_2d_y),
-                "im_out_signal_2d_y": np.imag(out_signal_2d_y),
-            }
-            xnew, ynew, mesh_new = _interp_to_odd(xold, yold, mesh_old_2)
-
-            if (
-                np.shape(re_out_signal_2d_x)[0] % 2 == 0
-                or np.shape(re_out_signal_2d_x)[1] % 2 == 0
-            ):
-                dX_out = np.mean(np.diff(xnew))
-                dY_out = np.mean(np.diff(ynew))
-
-            out_signal_2d_x = (
-                mesh_new["re_out_signal_2d_x"] + 1j * mesh_new["im_out_signal_2d_x"]
-            )
-            out_signal_2d_y = (
-                mesh_new["re_out_signal_2d_y"] + 1j * mesh_new["im_out_signal_2d_y"]
-            )
-
-            # extract propagated complex field and calculate corresponding x and y mesh arrays
-            # we assume same mesh for both components of E_field
-            hx = dX_out * l_scale
-            hy = dY_out * l_scale
-            ny, nx = np.shape(out_signal_2d_x)
-
-            assert np.shape(out_signal_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
-            assert np.shape(out_signal_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
-
-            local_xv = rslct.lct_abscissae(nx, hx)
-            local_yv = rslct.lct_abscissae(ny, hy)
-
-            # return to SRW wavefront form
-            re_ex = np.real(out_signal_2d_x)
-            im_ex = np.imag(out_signal_2d_x)
-            re_ey = np.real(out_signal_2d_y)
-            im_ey = np.imag(out_signal_2d_y)
-
-            x = np.linspace(np.min(local_xv), np.max(local_xv), nx)
-            y = np.linspace(np.min(local_xv), np.max(local_xv), ny)
-
-            # remake the wavefront
-            thisSlice.wfr = srwutil.make_wavefront(
-                re_ex,
-                im_ex,
-                re_ey,
-                im_ey,
-                thisSlice.photon_e_ev,
-                x,
-                y,
-            )
+                thisSubSlice.wfr = _propagate_lct(
+                    l_scale, abcd_mat_cryst, thisSubSlice.photon_e_ev, thisSubSlice.wfr
+                )
 
         return laser_pulse
 
@@ -749,62 +557,74 @@ class CrystalSlice(Element):
         n0 = self.n0
         n2 = self.n2
 
-        for i in np.arange(nslices):
-            thisSlice = laser_pulse.slice[i]
+        if n2 == 0:
+            optDrift = srwlib.SRWLOptD(L_slice / n0)
+            propagParDrift = [0, 0, 1.0, 0, 0, 1.0, 1.0, 1.0, 1.0, 0, 0, 0]
+            optBL = srwlib.SRWLOptC([optDrift], [propagParDrift])
+
+        else:
+            gamma = np.sqrt(n2 / n0)
+            A = np.cos(gamma * L_slice)
+            B = L_slice * np.sinc(gamma * L_slice / np.pi)
+            C = -n0 * gamma * np.sin(gamma * L_slice)
+            D = np.cos(gamma * L_slice)
+            f1 = B / (1 - A)
+            L = B
+            f2 = B / (1 - D)
+
+            optLens1 = srwlib.SRWLOptL(f1, f1)
+            optDrift = srwlib.SRWLOptD(L)
+            optLens2 = srwlib.SRWLOptL(f2, f2)
+
+            propagParLens1 = [0, 0, 1.0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+            propagParDrift = [0, 0, 1.0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+            propagParLens2 = [0, 0, 1.0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+
+            optBL = srwlib.SRWLOptC(
+                [optLens1, optDrift, optLens2],
+                [propagParLens1, propagParDrift, propagParLens2],
+            )
+
+        for j in np.arange(laser_pulse.nslice):
+            thisSlice = laser_pulse.slice[j]
+
             if calc_gain:
                 thisSlice = self.calc_gain(thisSlice)
             if nl_kick:
                 thisSlice = self.nl_kick(thisSlice)
 
-            if n2 == 0:
-                optDrift = srwlib.SRWLOptD(L_slice / n0)
-                propagParDrift = [0, 0, 1.0, 0, 0, 1.0, 1.0, 1.0, 1.0, 0, 0, 0]
-                # propagParDrift = [0, 0, 1., 0, 0, 1.1, 1.2, 1.1, 1.2, 0, 0, 0]
-                optBL = srwlib.SRWLOptC([optDrift], [propagParDrift])
+            srwlib.srwl.PropagElecField(thisSlice.wfr, optBL)
 
-            else:
-                gamma = np.sqrt(n2 / n0)
-                A = np.cos(gamma * L_slice)
-                B = L_slice * np.sinc(gamma * L_slice / np.pi)
-                # B = (1 / gamma) * np.sin(gamma * L_slice)
-                C = -n0 * gamma * np.sin(gamma * L_slice)
-                D = np.cos(gamma * L_slice)
-                f1 = B / (1 - A)
-                L = B
-                f2 = B / (1 - D)
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
 
-                optLens1 = srwlib.SRWLOptL(f1, f1)
-                optDrift = srwlib.SRWLOptD(L)
-                optLens2 = srwlib.SRWLOptL(f2, f2)
+                if calc_gain:
+                    thisSubSlice = self.calc_gain(thisSubSlice)
+                if nl_kick:
+                    thisSubSlice = self.nl_kick(thisSubSlice)
 
-                propagParLens1 = [0, 0, 1.0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
-                propagParDrift = [0, 0, 1.0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
-                propagParLens2 = [0, 0, 1.0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+                srwlib.srwl.PropagElecField(thisSubSlice.wfr, optBL)
 
-                optBL = srwlib.SRWLOptC(
-                    [optLens1, optDrift, optLens2],
-                    [propagParLens1, propagParDrift, propagParLens2],
-                )
-                # optBL = createABCDbeamline(A,B,C,D)
-
-            srwlib.srwl.PropagElecField(
-                thisSlice.wfr, optBL
-            )  # thisSlice s.b. a pointer, not a copy
-            # print('Propagated pulse slice ', i+1, ' of ', nslices)
         return laser_pulse
 
     def _propagate_gain_calc(self, laser_pulse, calc_gain, nl_kick):
         # calculates gain regardles of calc_gain param value
-        for i in np.arange(len(laser_pulse.slice)):
-            thisSlice = laser_pulse.slice[i]
+        for j in np.arange(laser_pulse.nslice):
+            thisSlice = laser_pulse.slice[j]
             thisSlice = self.calc_gain(thisSlice)
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice = self.calc_gain(thisSubSlice)
         return laser_pulse
 
     def _propagate_nl_kick(self, laser_pulse, nl_kick):
         # applies NL kick regardless of nl_kick param value
-        for i in np.arange(len(laser_pulse.slice)):
-            thisSlice = laser_pulse.slice[i]
+        for j in np.arange(laser_pulse.nslice):
+            thisSlice = laser_pulse.slice[j]
             thisSlice = self.nl_kick(thisSlice)
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice = self.nl_kick(thisSubSlice)
         return laser_pulse
 
     def propagate(self, laser_pulse, prop_type, calc_gain=False, nl_kick=False):
@@ -812,8 +632,6 @@ class CrystalSlice(Element):
             super().propagate(laser_pulse)
             return
         r = PKDict(
-            attenuate=self._propagate_attenuate,
-            placeholder=self._propagate_placeholder,
             abcd_lct=self._propagate_abcd_lct,
             n0n2_lct=self._propagate_n0n2_lct,
             n0n2_srw=self._propagate_n0n2_srw,
@@ -899,7 +717,7 @@ class CrystalSlice(Element):
         return delta_n_array_interp
 
     def calc_gain(self, thisSlice):
-
+        # note: thisSlice may be a LaserPulseSlice or a BandwidthSlice object
         lp_wfr = thisSlice.wfr
 
         # Interpolate the excited state density mesh of the current crystal slice to
@@ -907,7 +725,7 @@ class CrystalSlice(Element):
         temp_pop_inversion = self._interpolate_a_to_b("pop_inversion", lp_wfr)
 
         # Calculate gain
-        cross_sec = splev(thisSlice._lambda0, self.cross_section_fn)  # [m^2]
+        cross_sec = splev(thisSlice._lambda, self.cross_section_fn)  # [m^2]
         degen_factor = 1.67
 
         dx = (lp_wfr.mesh.xFin - lp_wfr.mesh.xStart) / lp_wfr.mesh.nx  # [m]
@@ -1038,7 +856,6 @@ class CrystalSlice(Element):
         radpts_m = radpts / 1e2
 
         # calculate wavefront mesh values
-
         lp_wfr = thisSlice.wfr
         wfr_xvals = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx)
         wfr_yvals = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny)
@@ -1055,8 +872,7 @@ class CrystalSlice(Element):
         # create nonlinear kick array
         nl_kick_array = np.exp(np.multiply(np.multiply(delta_n_interp, 1j), l_over_lam))
 
-        wfr0 = thisSlice.wfr
-        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(wfr0)
+        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(lp_wfr)
 
         Etot0_2d_x = re0_2d_ex + 1j * im0_2d_ex
         Etot0_2d_y = re0_2d_ey + 1j * im0_2d_ey
@@ -1068,12 +884,8 @@ class CrystalSlice(Element):
         # return to SRW wavefront form
         ex_real = np.real(Etot0_2d_x_nl_kick).flatten(order="C")
         ex_imag = np.imag(Etot0_2d_x_nl_kick).flatten(order="C")
-
         ey_real = np.real(Etot0_2d_y_nl_kick).flatten(order="C")
         ey_imag = np.imag(Etot0_2d_y_nl_kick).flatten(order="C")
-
-        x = np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx)
-        y = np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny)
 
         # remake the wavefront
         thisSlice.wfr = srwutil.make_wavefront(
@@ -1082,8 +894,8 @@ class CrystalSlice(Element):
             ey_real,
             ey_imag,
             thisSlice.photon_e_ev,
-            x,
-            y,
+            np.linspace(lp_wfr.mesh.xStart, lp_wfr.mesh.xFin, lp_wfr.mesh.nx),
+            np.linspace(lp_wfr.mesh.yStart, lp_wfr.mesh.yFin, lp_wfr.mesh.ny),
         )
 
         return thisSlice
@@ -1112,3 +924,90 @@ def _interp_to_odd(x_old, y_old, mesh_old):
         mesh_new = copy.deepcopy(mesh_old)
 
     return x_new, y_new, mesh_new
+
+
+def _propagate_lct(l_scale, abcd_mat_cryst, photon_e_ev, wfr0):
+    re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(wfr0)
+
+    xvals_slice = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
+    yvals_slice = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
+
+    mesh_old = {
+        "re0_2d_ex": re0_2d_ex,
+        "im0_2d_ex": im0_2d_ex,
+        "re0_2d_ey": re0_2d_ey,
+        "im0_2d_ey": im0_2d_ey,
+    }
+    xvals_slice, yvals_slice, mesh_new = _interp_to_odd(
+        xvals_slice, yvals_slice, mesh_old
+    )
+
+    Etot0_2d_x = mesh_new["re0_2d_ex"] + 1j * mesh_new["im0_2d_ex"]
+    Etot0_2d_y = mesh_new["re0_2d_ey"] + 1j * mesh_new["im0_2d_ey"]
+
+    dX = xvals_slice[1] - xvals_slice[0]  # horizontal spacing [m]
+    dX_scale = dX / l_scale
+    dY = yvals_slice[1] - yvals_slice[0]  # vertical spacing [m]
+    dY_scale = dY / l_scale
+
+    # define horizontal and vertical input signals
+    in_signal_2d_x = (dX_scale, dY_scale, Etot0_2d_x)
+    in_signal_2d_y = (dX_scale, dY_scale, Etot0_2d_y)
+
+    # calculate 2D LCTs
+    dX_out, dY_out, out_signal_2d_x = rslct.apply_lct_2d_sep(
+        abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_x
+    )
+    dX_out, dY_out, out_signal_2d_y = rslct.apply_lct_2d_sep(
+        abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_y
+    )
+
+    re_out_signal_2d_x = np.real(out_signal_2d_x)
+    x_total = (np.shape(re_out_signal_2d_x)[0] - 1) * dX_out
+    y_total = (np.shape(re_out_signal_2d_x)[1] - 1) * dY_out
+
+    xold = np.linspace(-x_total / 2.0, x_total / 2.0, np.shape(re_out_signal_2d_x)[0])
+    yold = np.linspace(-y_total / 2.0, y_total / 2.0, np.shape(re_out_signal_2d_x)[1])
+
+    mesh_old_2 = {
+        "re_out_signal_2d_x": np.real(out_signal_2d_x),
+        "im_out_signal_2d_x": np.imag(out_signal_2d_x),
+        "re_out_signal_2d_y": np.real(out_signal_2d_y),
+        "im_out_signal_2d_y": np.imag(out_signal_2d_y),
+    }
+    xnew, ynew, mesh_new = _interp_to_odd(xold, yold, mesh_old_2)
+
+    if (
+        np.shape(re_out_signal_2d_x)[0] % 2 == 0
+        or np.shape(re_out_signal_2d_x)[1] % 2 == 0
+    ):
+        dX_out = np.mean(np.diff(xnew))
+        dY_out = np.mean(np.diff(ynew))
+
+    out_signal_2d_x = (
+        mesh_new["re_out_signal_2d_x"] + 1j * mesh_new["im_out_signal_2d_x"]
+    )
+    out_signal_2d_y = (
+        mesh_new["re_out_signal_2d_y"] + 1j * mesh_new["im_out_signal_2d_y"]
+    )
+
+    # extract propagated complex field and calculate corresponding x and y mesh arrays
+    # we assume same mesh for both components of E_field
+    hx = dX_out * l_scale
+    hy = dY_out * l_scale
+    ny, nx = np.shape(out_signal_2d_x)
+    local_xv = rslct.lct_abscissae(nx, hx)
+    local_yv = rslct.lct_abscissae(ny, hy)
+
+    # remake the wavefront
+    wfr = srwutil.make_wavefront(
+        np.real(out_signal_2d_x),
+        np.imag(out_signal_2d_x),
+        np.real(out_signal_2d_y),
+        np.imag(out_signal_2d_y),
+        photon_e_ev,
+        np.linspace(np.min(local_xv), np.max(local_xv), nx),
+        np.linspace(np.min(local_xv), np.max(local_xv), ny),
+    )
+
+    return wfr
