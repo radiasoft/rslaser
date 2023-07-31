@@ -55,7 +55,7 @@ def test_sirepo_compatability():
                 pulseE=0.001,
                 sigx_waist=0.001,
                 sigy_waist=0.001,
-                tau_fwhm=2.3586500000000002e-11,
+                tau_fwhm=10.5 * 2.3586500000000002e-11,
                 phase_flatten_cutoff=0.85,
                 tau_0=2.3586500000000002e-11,
             ),

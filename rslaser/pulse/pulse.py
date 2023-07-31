@@ -138,7 +138,7 @@ class LaserPulse(ValidatorBase):
         self.pulseE = params.pulseE
 
         assert (
-            params.tau_fwhm >= params.tau_0
+            params.tau_fwhm > 10.0 * params.tau_0
         ), "ERROR -- Invalid pulse length parameters provided"
 
         tau_fwhm_intensity_profile = params.tau_fwhm / np.sqrt(2.0)
