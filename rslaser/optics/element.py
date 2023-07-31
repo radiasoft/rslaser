@@ -193,7 +193,7 @@ def _prop_abcd_lct(laser_pulse, abcd_mat, l_scale):
 def _split_beam(laser_pulse, transmitted_fraction):
     # Assume no loss to reflective layer absorption
 
-    def _wfr_split_beam(init_n_photons, transmitted_fraction, wfr0):
+    def _wfr_split_beam(photon_e_ev, transmitted_fraction, wfr0):
 
         intensity_2d = srwutil.calc_int_from_elec(wfr0)
         phase_1d = srwlib.array("d", [0] * wfr0.mesh.nx * wfr0.mesh.ny)
@@ -204,8 +204,6 @@ def _split_beam(laser_pulse, transmitted_fraction):
             .astype(np.float64)
         )
 
-        new_n_photons = copy.deepcopy(init_n_photons)
-        new_n_photons.mesh = init_n_photons.mesh * transmitted_fraction
         split_intensity = intensity_2d * transmitted_fraction
 
         split_e_norm = np.sqrt(2.0 * split_intensity / (const.c * const.epsilon_0))
@@ -220,7 +218,7 @@ def _split_beam(laser_pulse, transmitted_fraction):
             new_im0_ex,
             new_re0_ey,
             new_im0_ey,
-            new_n_photons,
+            photon_e_ev,
             np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx),
             np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny),
         )
@@ -229,18 +227,16 @@ def _split_beam(laser_pulse, transmitted_fraction):
 
     for j in np.arange(laser_pulse.nslice):
         thisSlice = laser_pulse.slice[j]
-
-        wfr0 = thisSlice.wfr
+        thisSlice.n_photons_2d.mesh *= transmitted_fraction
         thisSlice.wfr = _wfr_split_beam(
-            thisSlice.n_photons_2d, transmitted_fraction, wfr0
+            thisSlice.photon_e_ev, transmitted_fraction, thisSlice.wfr
         )
 
         for k in np.arange(thisSlice.bw_nslice):
             thisSubSlice = thisSlice.bandwidth_slice[k]
-
-            wfr0 = thisSubSlice.wfr
+            thisSubSlice.n_photons_2d.mesh *= transmitted_fraction
             thisSubSlice.wfr = _wfr_split_beam(
-                thisSubSlice.n_photons_2d, transmitted_fraction, wfr0
+                thisSubSlice.photon_e_ev, transmitted_fraction, thisSubSlice.wfr
             )
 
     return laser_pulse
