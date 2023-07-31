@@ -90,10 +90,6 @@ def test_instantiation02():
 def test_propagation():
     with pykern.pkunit.pkexcept(element.ElementException):
         crystal_slice_prop_test("default")
-    with pykern.pkunit.pkexcept(NotImplementedError):
-        crystal_slice_prop_test("attenuate")
-    with pykern.pkunit.pkexcept(NotImplementedError):
-        crystal_slice_prop_test("placeholder")
     c = crystal.CrystalSlice()
     with pykern.pkunit.pkexcept(KeyError):
         c.propagate(pulse.LaserPulse(), "should raise")
