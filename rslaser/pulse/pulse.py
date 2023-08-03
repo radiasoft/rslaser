@@ -132,13 +132,13 @@ class LaserPulse(ValidatorBase):
         )  # Function requires energy in J
         self.pulseE = params.pulseE
 
-        # A factor to match experimental red-shift, compensating for
-        # pulse stretcher implementation
-        params.tau_0 *= 2.0
-
         assert (
             params.tau_fwhm > 10.0 * params.tau_0
         ), "ERROR -- Invalid pulse length parameters provided"
+
+        # A factor to match experimental red-shift, compensating for
+        # pulse stretcher implementation
+        params.tau_0 *= 2.0
 
         tau_fwhm_intensity_profile = params.tau_fwhm / np.sqrt(2.0)
         tau_0_intensity_profile = params.tau_0 / np.sqrt(2.0)
