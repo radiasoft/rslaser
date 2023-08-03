@@ -7,7 +7,6 @@ import math
 import cmath
 import copy
 import numpy as np
-from pykern.pkdebug import pkdp, pkdlog
 from pykern.pkcollections import PKDict
 from numpy.polynomial.hermite import hermval
 import rslaser.optics.wavefront as rswf
@@ -15,13 +14,9 @@ import rsmath.const as rsc
 import rslaser.utils.unit_conversion as units
 import rslaser.utils.srwl_uti_data as srwutil
 import scipy.constants as const
-import scipy.ndimage as ndi
-from scipy.interpolate import RectBivariateSpline
+from scipy.interpolate import RectBivariateSpline, CubicSpline
 from scipy.ndimage.filters import gaussian_filter
 from scipy import special
-from scipy import signal
-from skimage import filters
-from skimage import img_as_float
 from skimage.restoration import unwrap_phase
 import scipy.optimize as opt
 import srwlib
@@ -136,6 +131,10 @@ class LaserPulse(ValidatorBase):
             units.calculate_lambda0_from_phE(params.photon_e_ev * const.e)
         )  # Function requires energy in J
         self.pulseE = params.pulseE
+
+        # A factor to match experimental red-shift, compensating for
+        # pulse stretcher implementation
+        params.tau_0 *= 2.0
 
         assert (
             params.tau_fwhm > 10.0 * params.tau_0
@@ -711,6 +710,56 @@ class LaserPulse(ValidatorBase):
                     thisSubSlice.wfr,
                     thisSubSlice.n_photons_2d,
                 )
+
+    def central_and_mean_wavelength(self, plot=False):
+
+        wavelength_mesh = np.zeros((self.slice[0].bw_nslice + 1, self.nslice))
+        photon_mesh = np.zeros((self.slice[0].bw_nslice + 1, self.nslice))
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            wavelength_mesh[3, j] = abs(
+                units.calculate_lambda0_from_phE(thisSlice.photon_e_ev * const.e)
+            )
+            photon_mesh[3, j] = np.sum(thisSlice.n_photons_2d.mesh)
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                bw_ind = int(3 + thisSubSlice.sign * thisSubSlice.rms_int)
+                wavelength_mesh[bw_ind, j] = abs(
+                    units.calculate_lambda0_from_phE(thisSubSlice.photon_e_ev * const.e)
+                )
+                photon_mesh[bw_ind, j] = np.sum(thisSubSlice.n_photons_2d.mesh)
+
+        mean_wavelength = np.sum(wavelength_mesh * photon_mesh / np.sum(photon_mesh))
+
+        wavelength, photon_n = bin_arrays(
+            (photon_mesh).flatten(), (wavelength_mesh * 1e9).flatten(), self.nslice
+        )
+        cs = CubicSpline(wavelength, photon_n)
+        wavelength_high_res = np.linspace(
+            wavelength[0], wavelength[-1], len(wavelength) * 10
+        )
+        photon_n_high_res = cs(wavelength_high_res)
+
+        loc = np.argwhere(np.max(photon_n_high_res) == photon_n_high_res)
+        central_wavelength = wavelength_high_res[loc]
+
+        if plot:
+            plt.figure()
+            plt.plot(wavelength, photon_n, "k", label="Pulse Data")
+            plt.plot(
+                wavelength_high_res, photon_n_high_res, "--r", label="Cubic Spline Fit"
+            )
+            plt.plot(
+                wavelength_high_res[loc],
+                photon_n_high_res[loc],
+                "*",
+                label="Central Wavelength",
+            )
+            plt.legend()
+            plt.show()
+
+        return central_wavelength, mean_wavelength
 
     def calc_total_energy(self):
         bw_nslice = self.slice[0].bw_nslice
@@ -1732,3 +1781,73 @@ def _replace_phase_nan(wfs_data):
         )
 
     return wfs_data
+
+
+def bin_arrays(y_array, x_array, n_values):
+
+    value_max = np.max(x_array)
+    value_min = np.min(x_array)
+
+    x_array_values = np.linspace(value_min, value_max, n_values)
+    x_array_bins = np.append(
+        np.copy(x_array_values), x_array_values[-1] + np.diff(x_array_values)[0]
+    ) - (np.diff(x_array_values)[0] / 2.0)
+
+    dbin = np.diff(x_array_bins)[0]
+    x_width = dbin
+
+    y_array_binned = np.zeros(np.shape(x_array_values))
+
+    digitized_x_array = np.digitize(x_array, x_array_bins)
+    for bin_index in range(1, len(x_array_bins)):
+
+        front_bin_value = x_array_bins[bin_index - 1]
+        end_bin_value = x_array_bins[bin_index]
+
+        loc_in_this_bin = np.where(digitized_x_array == bin_index)
+
+        x_values_in_this_bin = x_array[loc_in_this_bin]
+        y_values_in_this_bin = y_array[loc_in_this_bin]
+
+        front_half = np.where(x_values_in_this_bin < front_bin_value + (dbin / 2.0))
+        end_half = np.where(x_values_in_this_bin >= front_bin_value + (dbin / 2.0))
+
+        fraction_here_fh = (
+            (x_values_in_this_bin[front_half] + (x_width / 2.0)) - front_bin_value
+        ) / dbin
+        fraction_before_fh = (
+            front_bin_value - (x_values_in_this_bin[front_half] - (x_width / 2.0))
+        ) / dbin
+
+        fraction_here_eh = (
+            end_bin_value - (x_values_in_this_bin[end_half] - (x_width / 2.0))
+        ) / dbin
+        fraction_after_eh = (
+            (x_values_in_this_bin[end_half] + (x_width / 2.0)) - end_bin_value
+        ) / dbin
+
+        y_array_binned[bin_index - 1] += np.sum(
+            fraction_here_fh * y_values_in_this_bin[front_half]
+        )
+        try:
+            y_array_binned[bin_index - 2] += np.sum(
+                fraction_before_fh * y_values_in_this_bin[front_half]
+            )
+        except:
+            y_array_binned[bin_index - 1] += np.sum(
+                fraction_before_fh * y_values_in_this_bin[front_half]
+            )
+
+        y_array_binned[bin_index - 1] += np.sum(
+            fraction_here_eh * y_values_in_this_bin[end_half]
+        )
+        try:
+            y_array_binned[bin_index] += np.sum(
+                fraction_after_eh * y_values_in_this_bin[end_half]
+            )
+        except:
+            y_array_binned[bin_index - 1] += np.sum(
+                fraction_after_eh * y_values_in_this_bin[end_half]
+            )
+
+    return x_array_values, y_array_binned
