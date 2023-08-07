@@ -5,8 +5,8 @@ Copyright (c) 2021 RadiaSoft LLC. All rights reserved
 import array
 import math
 import cmath
+import copy
 import numpy as np
-from pykern.pkdebug import pkdp, pkdlog
 from pykern.pkcollections import PKDict
 from numpy.polynomial.hermite import hermval
 import rslaser.optics.wavefront as rswf
@@ -14,13 +14,9 @@ import rsmath.const as rsc
 import rslaser.utils.unit_conversion as units
 import rslaser.utils.srwl_uti_data as srwutil
 import scipy.constants as const
-import scipy.ndimage as ndi
-from scipy.interpolate import RectBivariateSpline
+from scipy.interpolate import RectBivariateSpline, CubicSpline
 from scipy.ndimage.filters import gaussian_filter
 from scipy import special
-from scipy import signal
-from skimage import filters
-from skimage import img_as_float
 from skimage.restoration import unwrap_phase
 import scipy.optimize as opt
 import srwlib
@@ -30,12 +26,12 @@ import matplotlib.pyplot as plt
 
 _LASER_PULSE_DEFAULTS = PKDict(
     nslice=3,
-    pulse_direction=0.0,  # 0 corresponds to 'right' or 'z' or 'forward', can be set to any angle relative
-    photon_e_ev=1.5,  # 1e3,
+    pulse_direction=0.0,  # 0 corresponds to 'right' or 'z' or 'forward',
+    photon_e_ev=1.5,
     num_sig_long=3.0,
     dist_waist=0,
     tau_fwhm=0.1 / const.c / math.sqrt(2.0),  # also tau_c: the chirped pulse length
-    tau_0=0.1 / const.c / math.sqrt(2.0),
+    tau_0=0.0,
     pulseE=0.001,
     sigx_waist=1.0e-3,
     sigy_waist=1.0e-3,
@@ -45,6 +41,7 @@ _LASER_PULSE_DEFAULTS = PKDict(
     mx=0,
     my=0,
     phase_flatten_cutoff=0.85,
+    d_lambda_RMS=0.0,
 )
 
 _ENVELOPE_DEFAULTS = PKDict(
@@ -57,7 +54,7 @@ _ENVELOPE_DEFAULTS = PKDict(
     z_center=0,
     x_shift=0.0,
     y_shift=0.0,
-    photon_e_ev=1.5,  # 1e3,
+    photon_e_ev=1.5,
     tau_fwhm=0.1 / const.c / math.sqrt(2.0),
 )
 
@@ -136,16 +133,34 @@ class LaserPulse(ValidatorBase):
         self.pulseE = params.pulseE
 
         assert (
-            params.tau_fwhm >= params.tau_0
+            params.tau_fwhm > 10.0 * params.tau_0
         ), "ERROR -- Invalid pulse length parameters provided"
 
-        tau_fwhm_intensity_profile = params.tau_fwhm * np.sqrt(2.0)
-        tau_0_intensity_profile = params.tau_0 * np.sqrt(2.0)
+        # A factor to match experimental red-shift, compensating for
+        # pulse stretcher implementation
+        params.tau_0 *= 2.0
 
-        alpha = 2.0 * np.log(2.0)
-        self.initial_chirp = alpha / (
-            tau_fwhm_intensity_profile * tau_0_intensity_profile
+        tau_fwhm_intensity_profile = params.tau_fwhm / np.sqrt(2.0)
+        tau_0_intensity_profile = params.tau_0 / np.sqrt(2.0)
+
+        if tau_0_intensity_profile == 0.0:
+            self.initial_chirp = 0.0
+
+            d_nu_fwhm = (2.0 * np.log(2.0)) / (np.pi * tau_fwhm_intensity_profile)
+
+        else:
+            alpha = 2.0 * np.log(2.0)  # natural log
+            self.initial_chirp = alpha / (
+                tau_fwhm_intensity_profile * tau_0_intensity_profile
+            )
+
+            d_nu_fwhm = (2.0 * np.log(2.0)) / (np.pi * tau_0_intensity_profile)
+
+        nu_fraction = d_nu_fwhm / (const.c / self._lambda0)
+        self.d_lambda_RMS = (
+            nu_fraction * self._lambda0 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
         )
+        params.d_lambda_RMS = self.d_lambda_RMS
 
         for i in range(params.nslice):
             # add the slices; each (slowly) instantiates an SRW wavefront object
@@ -156,87 +171,86 @@ class LaserPulse(ValidatorBase):
     def resize_laser_mesh(self):
         # Manually force mesh back to original extent + number of cells
 
-        for laser_index_i in np.arange(self.nslice):
-            thisSlice = self.slice[laser_index_i]
-
-            new_x = np.linspace(
-                thisSlice.wfr.mesh.xStart,
-                thisSlice.wfr.mesh.xFin,
-                thisSlice.wfr.mesh.nx,
-            )
-            new_y = np.linspace(
-                thisSlice.wfr.mesh.yStart,
-                thisSlice.wfr.mesh.yFin,
-                thisSlice.wfr.mesh.ny,
-            )
+        def _resize(initial_laser_xy, photon_e_ev, wfr0):
+            new_x = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
+            new_y = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
 
             # Check if need to make changes
-            if not (
-                np.array_equal(new_x, thisSlice.initial_laser_xy.x)
-                and np.array_equal(new_y, thisSlice.initial_laser_xy.y)
+            if np.array_equal(new_x, initial_laser_xy.x) and np.array_equal(
+                new_y, initial_laser_xy.y
             ):
+                return wfr0
 
-                re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
-                    thisSlice.wfr
-                )
+            else:
+                re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(wfr0)
 
                 # Interpolate ex meshes
                 rect_biv_spline_xre = RectBivariateSpline(new_x, new_y, re_ex_2d)
                 rect_biv_spline_xim = RectBivariateSpline(new_x, new_y, im_ex_2d)
                 new_re_ex_2d = rect_biv_spline_xre(
-                    thisSlice.initial_laser_xy.x, thisSlice.initial_laser_xy.y
+                    initial_laser_xy.x, initial_laser_xy.y
                 )
                 new_im_ex_2d = rect_biv_spline_xim(
-                    thisSlice.initial_laser_xy.x, thisSlice.initial_laser_xy.y
+                    initial_laser_xy.x, initial_laser_xy.y
                 )
 
                 # Interpolate ey meshes
                 rect_biv_spline_yre = RectBivariateSpline(new_x, new_y, re_ey_2d)
                 rect_biv_spline_yim = RectBivariateSpline(new_x, new_y, im_ey_2d)
                 new_re_ey_2d = rect_biv_spline_yre(
-                    thisSlice.initial_laser_xy.x, thisSlice.initial_laser_xy.y
+                    initial_laser_xy.x, initial_laser_xy.y
                 )
                 new_im_ey_2d = rect_biv_spline_yim(
-                    thisSlice.initial_laser_xy.x, thisSlice.initial_laser_xy.y
+                    initial_laser_xy.x, initial_laser_xy.y
                 )
 
-                thisSlice.wfr = srwutil.make_wavefront(
+                wfr = srwutil.make_wavefront(
                     new_re_ex_2d,
                     new_im_ex_2d,
                     new_re_ey_2d,
                     new_im_ey_2d,
-                    thisSlice.photon_e_ev,
-                    thisSlice.initial_laser_xy.x,
-                    thisSlice.initial_laser_xy.y,
+                    photon_e_ev,
+                    initial_laser_xy.x,
+                    initial_laser_xy.y,
+                )
+
+                return wfr
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            thisSlice.wfr = _resize(
+                thisSlice.initial_laser_xy, thisSlice.photon_e_ev, thisSlice.wfr
+            )
+
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice.wfr = _resize(
+                    thisSubSlice.initial_laser_xy,
+                    thisSubSlice.photon_e_ev,
+                    thisSubSlice.wfr,
                 )
 
     def flatten_phase_edges(self):
-
-        for laser_index_i in np.arange(self.nslice):
-
-            wfr = self.slice[laser_index_i].wfr
-
+        def _flatten_edges(flatten_cutoff, photon_e_ev, wfr0):
             # identify radial distance of every cell
-            x = np.linspace(wfr.mesh.xStart, wfr.mesh.xFin, wfr.mesh.nx)
-            y = np.linspace(wfr.mesh.yStart, wfr.mesh.yFin, wfr.mesh.ny)
+            x = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
+            y = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
             xv, yv = np.meshgrid(x, y)
             r = np.sqrt(xv**2.0 + yv**2.0)
 
             # extract the intensity and phase for all laser pulses
-            intensity_2d = srwutil.calc_int_from_elec(wfr)
-            phase_1d = srwlib.array("d", [0] * wfr.mesh.nx * wfr.mesh.ny)
-            srwl.CalcIntFromElecField(phase_1d, wfr, 0, 4, 3, wfr.mesh.eStart, 0, 0)
+            intensity_2d = srwutil.calc_int_from_elec(wfr0)
+            phase_1d = srwlib.array("d", [0] * wfr0.mesh.nx * wfr0.mesh.ny)
+            srwl.CalcIntFromElecField(phase_1d, wfr0, 0, 4, 3, wfr0.mesh.eStart, 0, 0)
             phase_2d = unwrap_phase(
                 np.array(phase_1d)
-                .reshape((wfr.mesh.nx, wfr.mesh.ny), order="C")
+                .reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
                 .astype(np.float64)
             )
 
-            location_flatten = np.where(
-                np.abs(r) >= (self.flatten_cutoff * wfr.mesh.xFin)
-            )
+            location_flatten = np.where(np.abs(r) >= (flatten_cutoff * wfr0.mesh.xFin))
 
-            x_average = x[(np.abs(x - (self.flatten_cutoff * wfr.mesh.xFin))).argmin()]
+            x_average = x[(np.abs(x - (flatten_cutoff * wfr0.mesh.xFin))).argmin()]
             location_value = np.where(np.abs(r - x_average) <= np.diff(x)[0] / 2.0)
             flatten_value = np.mean(phase_2d[location_value])
 
@@ -249,37 +263,60 @@ class LaserPulse(ValidatorBase):
             im_ey = np.zeros(np.shape(im_ex))
 
             # remake the wavefront
-            self.slice[laser_index_i].wfr = srwutil.make_wavefront(
-                re_ex, im_ex, re_ey, im_ey, self.slice[laser_index_i].photon_e_ev, x, y
+            wfr = srwutil.make_wavefront(re_ex, im_ex, re_ey, im_ey, photon_e_ev, x, y)
+            return wfr
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            thisSlice.wfr = _flatten_edges(
+                self.flatten_cutoff, thisSlice.photon_e_ev, thisSlice.wfr
             )
+
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice.wfr = _flatten_edges(
+                    self.flatten_cutoff, thisSubSlice.photon_e_ev, thisSubSlice.wfr
+                )
 
     def extract_total_2d_phase(self):
 
-        # self.flatten_phase_edges()
+        bw_nslice = self.slice[0].bw_nslice
+        photon_number = np.zeros((bw_nslice + 1, self.nslice))
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            photon_number[0, j] = np.sum(thisSlice.n_photons_2d.mesh)
 
-        slice_n_photons = np.array([])
-        for laser_index_i in np.arange(self.nslice):
-            slice_n_photons = np.append(
-                slice_n_photons, np.sum(self.slice[laser_index_i].n_photons_2d.mesh)
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                photon_number[k + 1, j] = np.sum(thisSubSlice.n_photons_2d.mesh)
+
+        def _extract_phase(j, k, photon_number, wfr0):
+            slice_phase_1d = srwlib.array("d", [0] * wfr0.mesh.nx * wfr0.mesh.ny)
+            srwlib.srwl.CalcIntFromElecField(
+                slice_phase_1d, wfr0, 0, 4, 3, wfr0.mesh.eStart, 0, 0
             )
+            slice_phase_2d = unwrap_phase(
+                np.array(slice_phase_1d)
+                .reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
+                .astype(np.float64)
+            )
+
+            weight = photon_number[k, j] / np.sum(photon_number)
+            return slice_phase_2d * weight
 
         total_phase_2d = np.zeros(
             (self.slice[0].wfr.mesh.nx, self.slice[0].wfr.mesh.ny)
         )
-        for laser_index_i in np.arange(self.nslice):
-            wfr = self.slice[laser_index_i].wfr
-            slice_phase_1d = srwlib.array("d", [0] * wfr.mesh.nx * wfr.mesh.ny)
-            srwlib.srwl.CalcIntFromElecField(
-                slice_phase_1d, wfr, 0, 4, 3, wfr.mesh.eStart, 0, 0
-            )
-            slice_phase_2d = unwrap_phase(
-                np.array(slice_phase_1d)
-                .reshape((wfr.mesh.nx, wfr.mesh.ny), order="C")
-                .astype(np.float64)
-            )
 
-            weight = slice_n_photons[laser_index_i] / np.sum(slice_n_photons)
-            total_phase_2d += slice_phase_2d * weight
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            total_phase_2d += _extract_phase(j, 0, photon_number, thisSlice.wfr)
+
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                total_phase_2d += _extract_phase(
+                    j, k + 1, photon_number, thisSubSlice.wfr
+                )
 
         return total_phase_2d
 
@@ -306,45 +343,55 @@ class LaserPulse(ValidatorBase):
         )
         pulse_factor = special.erf(pulse_end2) - special.erf(pulse_end1)
 
-        for laser_index_i in np.arange(nslices_pulse):
-
-            thisSlice = self.slice[laser_index_i]
-            slice_wfr = thisSlice.wfr
+        def _extract_elec_fields(pulse_factor, pulse_pos, ds, sig_s, wfr0):
 
             # total component of electric field
             re0, re0_mesh = srwutil.calc_int_from_wfr(
-                slice_wfr, _pol=6, _int_type=5, _det=None, _fname="", _pr=False
+                wfr0, _pol=6, _int_type=5, _det=None, _fname="", _pr=False
             )
             im0, im0_mesh = srwutil.calc_int_from_wfr(
-                slice_wfr, _pol=6, _int_type=6, _det=None, _fname="", _pr=False
+                wfr0, _pol=6, _int_type=6, _det=None, _fname="", _pr=False
             )
 
-            e_total.re[:, :, laser_index_i] = (
+            e_total_re = (
                 np.array(re0)
-                .reshape((slice_wfr.mesh.nx, slice_wfr.mesh.ny), order="C")
+                .reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
                 .astype(np.float64)
             )
-            e_total.im[:, :, laser_index_i] = (
+            e_total_im = (
                 np.array(im0)
-                .reshape((slice_wfr.mesh.nx, slice_wfr.mesh.ny), order="C")
+                .reshape((wfr0.mesh.nx, wfr0.mesh.ny), order="C")
                 .astype(np.float64)
             )
 
             # gaussian scale
-            slice_end1 = (thisSlice._pulse_pos - 0.5 * thisSlice.ds) / (
-                2.0 * thisSlice.sig_s
-            )
-            slice_end2 = (thisSlice._pulse_pos + 0.5 * thisSlice.ds) / (
-                2.0 * thisSlice.sig_s
-            )
+            slice_end1 = (pulse_pos - 0.5 * ds) / (2.0 * sig_s)
+            slice_end2 = (pulse_pos + 0.5 * ds) / (2.0 * sig_s)
             slice_width_factor = (
-                1.0
-                / np.exp(-thisSlice._pulse_pos**2.0 / (2.0 * thisSlice.sig_s) ** 2.0)
+                1.0 / np.exp(-(pulse_pos**2.0) / (2.0 * sig_s) ** 2.0)
             ) * ((special.erf(slice_end2) - special.erf(slice_end1)) / pulse_factor)
 
             # scale slice fields by factor to represent full slice, not just middle value
-            e_total.re[:, :, laser_index_i] *= slice_width_factor
-            e_total.im[:, :, laser_index_i] *= slice_width_factor
+            e_total_re *= slice_width_factor
+            e_total_im *= slice_width_factor
+
+            return e_total_re, e_total_im
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            pulse_pos = thisSlice._pulse_pos
+            ds = thisSlice.ds
+            sig_s = thisSlice.sig_s
+            e_total.re[:, :, j], e_total.im[:, :, j] = _extract_elec_fields(
+                pulse_factor, pulse_pos, ds, sig_s, thisSlice.wfr
+            )
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                e_t_re, e_t_im = _extract_elec_fields(
+                    pulse_factor, pulse_pos, ds, sig_s, thisSubSlice.wfr
+                )
+                e_total.re[:, :, j] += e_t_re
+                e_total.im[:, :, j] += e_t_im
 
         e_total.re = np.sum(e_total.re, axis=2)
         e_total.im = np.sum(e_total.im, axis=2)
@@ -356,37 +403,40 @@ class LaserPulse(ValidatorBase):
         pump_offset_x,
         pump_offset_y,
     ):
-
-        for laser_index_i in np.arange(self.nslice):
-            thisSlice = self.slice[laser_index_i]
-
-            x = np.linspace(
-                thisSlice.wfr.mesh.xStart,
-                thisSlice.wfr.mesh.xFin,
-                thisSlice.wfr.mesh.nx,
-            )
-            y = np.linspace(
-                thisSlice.wfr.mesh.yStart,
-                thisSlice.wfr.mesh.yFin,
-                thisSlice.wfr.mesh.ny,
-            )
+        def _shift_wfr(pump_offset_x, pump_offset_y, photon_e_ev, wfr0):
+            x = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
+            y = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
 
             new_x = x - pump_offset_x
             new_y = y - pump_offset_y
 
-            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
-                thisSlice.wfr
-            )
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(wfr0)
 
-            thisSlice.wfr = srwutil.make_wavefront(
+            wfr = srwutil.make_wavefront(
                 re_ex_2d,
                 im_ex_2d,
                 re_ey_2d,
                 im_ey_2d,
-                thisSlice.photon_e_ev,
+                photon_e_ev,
                 new_x,
                 new_y,
             )
+            return wfr
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            thisSlice.wfr = _shift_wfr(
+                pump_offset_x, pump_offset_y, thisSlice.photon_e_ev, thisSlice.wfr
+            )
+
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice.wfr = _shift_wfr(
+                    pump_offset_x,
+                    pump_offset_y,
+                    thisSubSlice.photon_e_ev,
+                    thisSubSlice.wfr,
+                )
 
     def combine_n2_variation(
         self,
@@ -395,11 +445,9 @@ class LaserPulse(ValidatorBase):
         pump_waist,
         max_n2,
     ):
-
-        for laser_index_i in np.arange(self.nslice):
-            # For each laser slice, combine the propagated wavefronts
-            wfr_max = laser_pulse_copies.n2_max.slice[laser_index_i].wfr
-            wfr_0 = laser_pulse_copies.n2_0.slice[laser_index_i].wfr
+        def _combine_variation(
+            radial_n2_factor, pump_waist, max_n2, photon_e_ev, wfr_0, wfr_max
+        ):
 
             # extract the intensity and phase for all laser pulses
             intensity_2d = PKDict(
@@ -452,9 +500,6 @@ class LaserPulse(ValidatorBase):
             intensity = intensity_2d.n2_0
             phase = phase_2d.n2_0
             n2 = np.zeros(np.shape(intensity))
-            self.slice[laser_index_i].n_photons_2d.mesh = laser_pulse_copies.n2_0.slice[
-                laser_index_i
-            ].n_photons_2d.mesh
 
             # Calculate the scaling function
             scaling_fn = np.zeros(np.shape(r))
@@ -484,15 +529,40 @@ class LaserPulse(ValidatorBase):
             im_ey = np.zeros(np.shape(im_ex))
 
             # remake the wavefront
-            self.slice[laser_index_i].wfr = srwutil.make_wavefront(
-                re_ex,
-                im_ex,
-                re_ey,
-                im_ey,
-                self.slice[laser_index_i].photon_e_ev,
-                x,
-                y,
+            wfr = srwutil.make_wavefront(re_ex, im_ex, re_ey, im_ey, photon_e_ev, x, y)
+            return wfr
+
+        for j in np.arange(self.nslice):
+            # For each laser slice, combine the propagated wavefronts
+
+            thisSlice = self.slice[j]
+            thisSlice.wfr = _combine_variation(
+                radial_n2_factor,
+                pump_waist,
+                max_n2,
+                thisSlice.photon_e_ev,
+                laser_pulse_copies.n2_0.slice[j].wfr,
+                laser_pulse_copies.n2_max.slice[j].wfr,
             )
+            thisSlice.n_photons_2d.mesh = laser_pulse_copies.n2_0.slice[
+                j
+            ].n_photons_2d.mesh
+
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice.wfr = _combine_variation(
+                    radial_n2_factor,
+                    pump_waist,
+                    max_n2,
+                    thisSubSlice.photon_e_ev,
+                    laser_pulse_copies.n2_0.slice[j].bandwidth_slice[k].wfr,
+                    laser_pulse_copies.n2_max.slice[j].bandwidth_slice[k].wfr,
+                )
+                thisSubSlice.n_photons_2d.mesh = (
+                    laser_pulse_copies.n2_0.slice[j]
+                    .bandwidth_slice[k]
+                    .n_photons_2d.mesh
+                )
 
         return self
 
@@ -503,12 +573,8 @@ class LaserPulse(ValidatorBase):
         elif self.pulse_direction == 180.0:
             self.pulse_direction = 0.0
 
-        for laser_index_i in np.arange(self.nslice):
-            thisSlice = self.slice[laser_index_i]
-
-            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
-                thisSlice.wfr
-            )
+        def _flip_fields(photon_e_ev, initial_laser_xy, wfr0):
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(wfr0)
 
             # E_f (x,y) = E_i (-x,-y)
             new_re_ex_2d = np.flip(re_ex_2d)
@@ -516,24 +582,37 @@ class LaserPulse(ValidatorBase):
             new_re_ey_2d = np.flip(re_ey_2d)
             new_im_ey_2d = np.flip(im_ey_2d)
 
-            thisSlice.wfr = srwutil.make_wavefront(
+            wfr = srwutil.make_wavefront(
                 new_re_ex_2d,
                 new_im_ex_2d,
                 new_re_ey_2d,
                 new_im_ey_2d,
-                thisSlice.photon_e_ev,
-                thisSlice.initial_laser_xy.x,
-                thisSlice.initial_laser_xy.y,
+                photon_e_ev,
+                initial_laser_xy.x,
+                initial_laser_xy.y,
             )
+
+            return wfr
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            thisSlice.wfr = _flip_fields(
+                thisSlice.photon_e_ev, thisSlice.initial_laser_xy, thisSlice.wfr
+            )
+
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice.wfr = _flip_fields(
+                    thisSubSlice.photon_e_ev,
+                    thisSubSlice.initial_laser_xy,
+                    thisSubSlice.wfr,
+                )
 
     def zero_phase(self):
         # Manually zero the phase
-        for laser_index_i in np.arange(self.nslice):
-            thisSlice = self.slice[laser_index_i]
+        def _zero_wfr_phase(photon_e_ev, initial_laser_xy, wfr0):
 
-            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(
-                thisSlice.wfr
-            )
+            re_ex_2d, im_ex_2d, re_ey_2d, im_ey_2d = srwutil.extract_2d_fields(wfr0)
 
             new_re_ex_2d = np.sqrt(re_ex_2d**2.0 + im_ex_2d**2.0)
             new_im_ex_2d = np.zeros(np.shape(new_re_ex_2d))
@@ -541,86 +620,163 @@ class LaserPulse(ValidatorBase):
             new_im_ey_2d = np.zeros(np.shape(new_re_ex_2d))
 
             # remake the wavefront
-            thisSlice.wfr = srwutil.make_wavefront(
+            wfr = srwutil.make_wavefront(
                 new_re_ex_2d,
                 new_im_ex_2d,
                 new_re_ey_2d,
                 new_im_ey_2d,
-                thisSlice.photon_e_ev,
-                thisSlice.initial_laser_xy.x,
-                thisSlice.initial_laser_xy.y,
+                photon_e_ev,
+                initial_laser_xy.x,
+                initial_laser_xy.y,
+            )
+            return wfr
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            thisSlice.wfr = _zero_wfr_phase(
+                thisSlice.photon_e_ev, thisSlice.initial_laser_xy, thisSlice.wfr
             )
 
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice.wfr = _zero_wfr_phase(
+                    thisSubSlice.photon_e_ev,
+                    thisSubSlice.initial_laser_xy,
+                    thisSubSlice.wfr,
+                )
+
     def update_photon_positions(self):
-        for laser_index_i in np.arange(self.nslice):
+        def _update_ph_pos(pulse_pos, ds, sig_s, photon_e, wfr, init_n_photons):
 
-            thisSlice = self.slice[laser_index_i]
-            initial_photons = np.copy(thisSlice.n_photons_2d.mesh)
-
-            intens_2d = srwutil.calc_int_from_elec(
-                thisSlice.wfr
-            )  # extract 2d intensity
+            intens_2d = srwutil.calc_int_from_elec(wfr)
             efield_abs_sqrd_2d = (
                 np.sqrt(const.mu_0 / const.epsilon_0) * 2.0 * intens_2d
             )  # [V^2/m^2]
 
-            dx = (
-                thisSlice.wfr.mesh.xFin - thisSlice.wfr.mesh.xStart
-            ) / thisSlice.wfr.mesh.nx
-            dy = (
-                thisSlice.wfr.mesh.yFin - thisSlice.wfr.mesh.yStart
-            ) / thisSlice.wfr.mesh.ny
+            dx = (wfr.mesh.xFin - wfr.mesh.xStart) / wfr.mesh.nx
+            dy = (wfr.mesh.yFin - wfr.mesh.yStart) / wfr.mesh.ny
             cell_area = dx * dy
 
             # Field energy per grid cell is the area of that cell times the energy density
-            end1 = (thisSlice._pulse_pos - 0.5 * thisSlice.ds) / (
-                np.sqrt(2.0) * thisSlice.sig_s
-            )
-            end2 = (thisSlice._pulse_pos + 0.5 * thisSlice.ds) / (
-                np.sqrt(2.0) * thisSlice.sig_s
-            )
+            end1 = (pulse_pos - 0.5 * ds) / (np.sqrt(2.0) * sig_s)
+            end2 = (pulse_pos + 0.5 * ds) / (np.sqrt(2.0) * sig_s)
             energy_2d = (
                 cell_area
                 * (const.epsilon_0 / 2.0)
                 * (
                     efield_abs_sqrd_2d
-                    / np.exp(
-                        -thisSlice._pulse_pos**2.0
-                        / (np.sqrt(2.0) * thisSlice.sig_s) ** 2.0
-                    )
+                    / np.exp(-(pulse_pos**2.0) / (np.sqrt(2.0) * sig_s) ** 2.0)
                 )
                 * (
                     (np.sqrt(np.pi) / 2.0)
-                    * (np.sqrt(2.0) * thisSlice.sig_s)
+                    * (np.sqrt(2.0) * sig_s)
                     * (special.erf(end2) - special.erf(end1))
                 )
             )
-            # Get slice value of photon_e (will be in eV)
-            photon_e = thisSlice.photon_e_ev * const.e
+
+            new_n_photons = copy.deepcopy(init_n_photons)
 
             # Number of photons in each grid cell can be found by dividing the
             # total energy of the laser in that grid cell by the energy of a photon
-            thisSlice.n_photons_2d.mesh = energy_2d / photon_e
-            thisSlice.n_photons_2d.x = np.linspace(
-                thisSlice.wfr.mesh.xStart,
-                thisSlice.wfr.mesh.xFin,
-                thisSlice.wfr.mesh.nx,
+            new_n_photons.mesh = energy_2d / photon_e
+            new_n_photons.x = np.linspace(wfr.mesh.xStart, wfr.mesh.xFin, wfr.mesh.nx)
+            new_n_photons.y = np.linspace(wfr.mesh.yStart, wfr.mesh.yFin, wfr.mesh.ny)
+
+            return new_n_photons
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+
+            pulse_pos = thisSlice._pulse_pos
+            ds = thisSlice.ds
+            sig_s = thisSlice.sig_s
+
+            thisSlice.n_photons_2d = _update_ph_pos(
+                pulse_pos,
+                ds,
+                sig_s,
+                thisSlice.photon_e_ev * const.e,
+                thisSlice.wfr,
+                thisSlice.n_photons_2d,
             )
-            thisSlice.n_photons_2d.y = np.linspace(
-                thisSlice.wfr.mesh.yStart,
-                thisSlice.wfr.mesh.yFin,
-                thisSlice.wfr.mesh.ny,
+
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                thisSubSlice.n_photons_2d = _update_ph_pos(
+                    pulse_pos,
+                    ds,
+                    sig_s,
+                    thisSubSlice.photon_e_ev * const.e,
+                    thisSubSlice.wfr,
+                    thisSubSlice.n_photons_2d,
+                )
+
+    def central_and_mean_wavelength(self, plot=False):
+
+        wavelength_mesh = np.zeros((self.slice[0].bw_nslice + 1, self.nslice))
+        photon_mesh = np.zeros((self.slice[0].bw_nslice + 1, self.nslice))
+
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+            wavelength_mesh[3, j] = abs(
+                units.calculate_lambda0_from_phE(thisSlice.photon_e_ev * const.e)
             )
+            photon_mesh[3, j] = np.sum(thisSlice.n_photons_2d.mesh)
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+                bw_ind = int(3 + thisSubSlice.sign * thisSubSlice.rms_int)
+                wavelength_mesh[bw_ind, j] = abs(
+                    units.calculate_lambda0_from_phE(thisSubSlice.photon_e_ev * const.e)
+                )
+                photon_mesh[bw_ind, j] = np.sum(thisSubSlice.n_photons_2d.mesh)
+
+        mean_wavelength = np.sum(wavelength_mesh * photon_mesh / np.sum(photon_mesh))
+
+        wavelength, photon_n = bin_arrays(
+            (photon_mesh).flatten(), (wavelength_mesh * 1e9).flatten(), self.nslice
+        )
+        cs = CubicSpline(wavelength, photon_n)
+        wavelength_high_res = np.linspace(
+            wavelength[0], wavelength[-1], len(wavelength) * 10
+        )
+        photon_n_high_res = cs(wavelength_high_res)
+
+        loc = np.argwhere(np.max(photon_n_high_res) == photon_n_high_res)
+        central_wavelength = wavelength_high_res[loc]
+
+        if plot:
+            plt.figure()
+            plt.plot(wavelength, photon_n, "k", label="Pulse Data")
+            plt.plot(
+                wavelength_high_res, photon_n_high_res, "--r", label="Cubic Spline Fit"
+            )
+            plt.plot(
+                wavelength_high_res[loc],
+                photon_n_high_res[loc],
+                "*",
+                label="Central Wavelength",
+            )
+            plt.legend()
+            plt.show()
+
+        return central_wavelength, mean_wavelength
 
     def calc_total_energy(self):
-        photon_e_ev = np.zeros(self.nslice)
-        photon_number = np.zeros(self.nslice)
+        bw_nslice = self.slice[0].bw_nslice
+        photon_e_ev = np.zeros((bw_nslice + 1, self.nslice))
+        photon_number = np.zeros((bw_nslice + 1, self.nslice))
 
-        for laser_index_i in np.arange(self.nslice):
-            photon_number[laser_index_i] = np.sum(
-                self.slice[laser_index_i].n_photons_2d.mesh
-            )
-            photon_e_ev[laser_index_i] = self.slice[laser_index_i].photon_e_ev
+        for j in np.arange(self.nslice):
+            thisSlice = self.slice[j]
+
+            photon_e_ev[0, j] = thisSlice.photon_e_ev
+            photon_number[0, j] = np.sum(thisSlice.n_photons_2d.mesh)
+
+            for k in np.arange(thisSlice.bw_nslice):
+                thisSubSlice = thisSlice.bandwidth_slice[k]
+
+                photon_e_ev[k + 1, j] = thisSubSlice.photon_e_ev
+                photon_number[k + 1, j] = np.sum(thisSubSlice.n_photons_2d.mesh)
 
         pulse_energy = photon_number * photon_e_ev * const.e
         return np.sum(pulse_energy)
@@ -691,10 +847,10 @@ class LaserPulseSlice(ValidatorBase):
         self.sigx_waist = params.sigx_waist
         self.sigy_waist = params.sigy_waist
         self.num_sig_trans = params.num_sig_trans
-        # self.z_waist = params.z_waist
         self.nslice = params.nslice
         self.nx_slice = params.nx_slice
         self.dist_waist = params.dist_waist
+        self.d_lambda_RMS = params.d_lambda_RMS
 
         self.pulseE_slice = (
             params.pulseE / self.nslice
@@ -705,40 +861,73 @@ class LaserPulseSlice(ValidatorBase):
         self.ds = (
             2 * params.num_sig_long * self.sig_s / params.nslice
         )  # longitudinal spacing between slices
-        # self._pulse_pos = self.dist_waist - params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
         self._pulse_pos = (
             -params.num_sig_long * self.sig_s + (slice_index + 0.5) * self.ds
         )
 
-        tau_fwhm_intensity_profile = params.tau_fwhm * np.sqrt(2.0)  # / np.sqrt(2.0)
-        tau_0_intensity_profile = params.tau_0 * np.sqrt(2.0)  # / np.sqrt(2.0)
+        tau_fwhm_intensity_profile = params.tau_fwhm / np.sqrt(2.0)
+        tau_0_intensity_profile = params.tau_0 / np.sqrt(2.0)
 
-        alpha = 2.0 * np.log(2.0)  # natural log
-        chirp = alpha / (tau_fwhm_intensity_profile * tau_0_intensity_profile)
+        if tau_0_intensity_profile == 0.0:
+            chirp = 0.0
+        else:
+            alpha = 2.0 * np.log(2.0)  # natural log
+            chirp = alpha / (tau_fwhm_intensity_profile * tau_0_intensity_profile)
 
         nu = (const.c / self._lambda0) + (chirp / np.pi) * (self._pulse_pos / const.c)
         self._lambda = const.c / nu
         self.photon_e_ev = units.calculate_phE_from_lambda0(self._lambda) / const.e
 
-        constConvRad = 1.23984186e-06 / (
-            4 * 3.1415926536
-        )  ##conversion from energy to 1/wavelength
-        rmsAngDiv_x = constConvRad / (
-            self.photon_e_ev * self.sigx_waist
-        )  ##RMS angular divergence [rad]
-        rmsAngDiv_y = constConvRad / (self.photon_e_ev * self.sigy_waist)
-
-        sigrL_x = math.sqrt(self.sigx_waist**2 + (self.dist_waist * rmsAngDiv_x) ** 2)
-        sigrL_y = math.sqrt(self.sigy_waist**2 + (self.dist_waist * rmsAngDiv_y) ** 2)
-
         self._wavefront(params, files)
 
-        # Calculate the initial number of photons in 2d grid of each slice from pulseE_slice
-        self.n_photons_2d = self.calc_init_n_photons()  # 2d array
+        # Calculate the initial number of photons in each slice from pulseE_slice
+        self.n_photons_2d = self._calc_init_n_photons()
 
         self.initial_laser_xy = PKDict(
             x=np.linspace(self.wfr.mesh.xStart, self.wfr.mesh.xFin, self.wfr.mesh.nx),
             y=np.linspace(self.wfr.mesh.yStart, self.wfr.mesh.yFin, self.wfr.mesh.ny),
+        )
+
+        self.bandwidth_slice = []
+        self.bw_nslice = 6
+        for i in range(self.bw_nslice):
+            self.bandwidth_slice.append(
+                BandwidthSlice(
+                    i,
+                    np.copy(self.d_lambda_RMS),
+                    np.copy(self._lambda),
+                    copy.deepcopy(self.wfr),
+                    copy.deepcopy(self.initial_laser_xy),
+                    np.copy(self.pulseE_slice),
+                    copy.deepcopy(self.n_photons_2d),
+                )
+            )
+
+        # fraction of photons contained in the sub-slice corresponding to the central wavelength of that laser pulse slice
+        # is an integral from integral_start to integral_end
+        sigma = self.d_lambda_RMS * np.sqrt(2.0)
+        erf_arg1 = (-0.5 * self.d_lambda_RMS) / (np.sqrt(2.0) * sigma)
+        erf_arg2 = (0.5 * self.d_lambda_RMS) / (np.sqrt(2.0) * sigma)
+        subslice_fraction = 0.5 * (special.erf(erf_arg2) - special.erf(erf_arg1))
+
+        self.pulseE_slice *= subslice_fraction
+        self.n_photons_2d.mesh *= subslice_fraction
+
+        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(self.wfr)
+
+        re0_2d_ex *= np.sqrt(subslice_fraction)
+        im0_2d_ex *= np.sqrt(subslice_fraction)
+        re0_2d_ey *= np.sqrt(subslice_fraction)
+        im0_2d_ey *= np.sqrt(subslice_fraction)
+
+        self.wfr = srwutil.make_wavefront(
+            re0_2d_ex,
+            im0_2d_ex,
+            re0_2d_ey,
+            im0_2d_ey,
+            self.photon_e_ev,
+            self.initial_laser_xy.x,
+            self.initial_laser_xy.y,
         )
 
     def _wavefront(self, params, files):
@@ -885,7 +1074,7 @@ class LaserPulseSlice(ValidatorBase):
             params.my,
         )
 
-    def calc_init_n_photons(self):
+    def _calc_init_n_photons(self):
 
         # Note: assumes longitudinal gaussian profile when initializing
 
@@ -915,6 +1104,7 @@ class LaserPulseSlice(ValidatorBase):
                 * (special.erf(end2) - special.erf(end1))
             )
         )
+
         # Get slice value of photon_e (will be in eV)
         photon_e = self.photon_e_ev * const.e
 
@@ -926,6 +1116,92 @@ class LaserPulseSlice(ValidatorBase):
             y=np.linspace(self.wfr.mesh.yStart, self.wfr.mesh.yFin, self.wfr.mesh.ny),
         )
         return n_photons_2d
+
+
+class BandwidthSlice(ValidatorBase):
+    """
+    This class represents the bandwidth of each slice in a laser pulse.
+    Each of our existing laser pulse slices are divided into 7 overlapping
+    slices, (the parent/original + 6 additional) with central wavelength values of
+        lambda_c
+        lambda_c +/- 1 * d_lambda_RMS
+        lambda_c +/- 2 * d_lambda_RMS
+        lambda_c +/- 3 * d_lambda_RMS
+    where lambda_c is the local value of the chirped wavelength for the parent.
+
+    Args:
+        slice_index (int): index of slice
+        LaserSliceCopy: a copy of the slice these bandwidth slices beling to
+
+    Returns:
+        instance of class
+    """
+
+    _INPUT_ERROR = InvalidLaserPulseInputError
+    _DEFAULTS = _LASER_PULSE_DEFAULTS
+
+    def __init__(
+        self,
+        slice_index,
+        d_lambda_RMS,
+        slice_lambda,
+        wfr,
+        initial_laser_xy,
+        original_pulseE_slice,
+        original_n_photons_2d,
+    ):
+
+        self._validate_type(slice_index, int, "slice_index")
+        self.slice_index = slice_index
+
+        self.wfr = wfr
+        self.initial_laser_xy = initial_laser_xy
+        self.pulseE_slice = original_pulseE_slice
+        self.n_photons_2d = original_n_photons_2d
+
+        central_subslice_lambda = slice_lambda
+        self.rms_int = np.ceil(2.0 * (self.slice_index + 1.0e-3) / 3.5)
+        self.sign = 2.0 * (-self.slice_index % -2) + 1
+
+        self._lambda = central_subslice_lambda + self.sign * self.rms_int * d_lambda_RMS
+        self.photon_e_ev = units.calculate_phE_from_lambda0(self._lambda) / const.e
+
+        # fraction of photons contained in the sub-slice corresponding to the central wavelength of that laser pulse slice
+        # is an integral from integral_start to integral_end
+        sigma = d_lambda_RMS * np.sqrt(2.0)
+        if self.rms_int == 3:
+            erf_arg1 = -1.0 * np.inf
+            erf_arg2 = ((-1.0 * self.rms_int + 0.5) * d_lambda_RMS) / (
+                np.sqrt(2.0) * sigma
+            )
+        else:
+            erf_arg1 = ((self.sign * self.rms_int - 0.5) * d_lambda_RMS) / (
+                np.sqrt(2.0) * sigma
+            )
+            erf_arg2 = ((self.sign * self.rms_int + 0.5) * d_lambda_RMS) / (
+                np.sqrt(2.0) * sigma
+            )
+        subslice_fraction = 0.5 * (special.erf(erf_arg2) - special.erf(erf_arg1))
+
+        self.pulseE_slice *= subslice_fraction
+        self.n_photons_2d.mesh *= subslice_fraction
+
+        re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(self.wfr)
+
+        re0_2d_ex *= np.sqrt(subslice_fraction)
+        im0_2d_ex *= np.sqrt(subslice_fraction)
+        re0_2d_ey *= np.sqrt(subslice_fraction)
+        im0_2d_ey *= np.sqrt(subslice_fraction)
+
+        self.wfr = srwutil.make_wavefront(
+            re0_2d_ex,
+            im0_2d_ex,
+            re0_2d_ey,
+            im0_2d_ey,
+            self.photon_e_ev,
+            self.initial_laser_xy.x,
+            self.initial_laser_xy.y,
+        )
 
 
 class LaserPulseEnvelope(ValidatorBase):
@@ -1505,3 +1781,73 @@ def _replace_phase_nan(wfs_data):
         )
 
     return wfs_data
+
+
+def bin_arrays(y_array, x_array, n_values):
+
+    value_max = np.max(x_array)
+    value_min = np.min(x_array)
+
+    x_array_values = np.linspace(value_min, value_max, n_values)
+    x_array_bins = np.append(
+        np.copy(x_array_values), x_array_values[-1] + np.diff(x_array_values)[0]
+    ) - (np.diff(x_array_values)[0] / 2.0)
+
+    dbin = np.diff(x_array_bins)[0]
+    x_width = dbin
+
+    y_array_binned = np.zeros(np.shape(x_array_values))
+
+    digitized_x_array = np.digitize(x_array, x_array_bins)
+    for bin_index in range(1, len(x_array_bins)):
+
+        front_bin_value = x_array_bins[bin_index - 1]
+        end_bin_value = x_array_bins[bin_index]
+
+        loc_in_this_bin = np.where(digitized_x_array == bin_index)
+
+        x_values_in_this_bin = x_array[loc_in_this_bin]
+        y_values_in_this_bin = y_array[loc_in_this_bin]
+
+        front_half = np.where(x_values_in_this_bin < front_bin_value + (dbin / 2.0))
+        end_half = np.where(x_values_in_this_bin >= front_bin_value + (dbin / 2.0))
+
+        fraction_here_fh = (
+            (x_values_in_this_bin[front_half] + (x_width / 2.0)) - front_bin_value
+        ) / dbin
+        fraction_before_fh = (
+            front_bin_value - (x_values_in_this_bin[front_half] - (x_width / 2.0))
+        ) / dbin
+
+        fraction_here_eh = (
+            end_bin_value - (x_values_in_this_bin[end_half] - (x_width / 2.0))
+        ) / dbin
+        fraction_after_eh = (
+            (x_values_in_this_bin[end_half] + (x_width / 2.0)) - end_bin_value
+        ) / dbin
+
+        y_array_binned[bin_index - 1] += np.sum(
+            fraction_here_fh * y_values_in_this_bin[front_half]
+        )
+        try:
+            y_array_binned[bin_index - 2] += np.sum(
+                fraction_before_fh * y_values_in_this_bin[front_half]
+            )
+        except:
+            y_array_binned[bin_index - 1] += np.sum(
+                fraction_before_fh * y_values_in_this_bin[front_half]
+            )
+
+        y_array_binned[bin_index - 1] += np.sum(
+            fraction_here_eh * y_values_in_this_bin[end_half]
+        )
+        try:
+            y_array_binned[bin_index] += np.sum(
+                fraction_after_eh * y_values_in_this_bin[end_half]
+            )
+        except:
+            y_array_binned[bin_index - 1] += np.sum(
+                fraction_after_eh * y_values_in_this_bin[end_half]
+            )
+
+    return x_array_values, y_array_binned

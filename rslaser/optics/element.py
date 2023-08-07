@@ -64,23 +64,7 @@ def _interp_to_odd(x_old, y_old, mesh_old):
 def _prop_abcd_lct(laser_pulse, abcd_mat, l_scale):
     nslices_pulse = laser_pulse.nslice
 
-    photon_e_ev = laser_pulse.photon_e_ev
-    ##Convert energy to wavelength
-    hc_ev_um = 1.23984198  # hc [eV*um]
-    phLambda = (
-        hc_ev_um / photon_e_ev * 1e-6
-    )  # wavelength corresponding to photon_e_ev in meters
-
-    # rescale ABCD matrix with wavelength and scale factor for use in LCT algorithm
-    A = abcd_mat.A
-    B = abcd_mat.B * phLambda / (l_scale**2)
-    C = abcd_mat.C / phLambda * (l_scale**2)
-    D = abcd_mat.D
-    abcd_mat_cryst = np.array([[A, B], [C, D]])
-
-    for i in np.arange(nslices_pulse):
-        thisSlice = laser_pulse.slice[i]
-        wfr0 = thisSlice.wfr
+    def _wfr_prop_abcd_lct(abcd_mat_cryst, l_scale, photon_e_ev, wfr0):
         re0_2d_ex, im0_2d_ex, re0_2d_ey, im0_2d_ey = srwutil.extract_2d_fields(wfr0)
 
         xvals_slice = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
@@ -108,9 +92,6 @@ def _prop_abcd_lct(laser_pulse, abcd_mat, l_scale):
         in_signal_2d_x = (dX_scale, dY_scale, Etot0_2d_x)
         in_signal_2d_y = (dX_scale, dY_scale, Etot0_2d_y)
 
-        assert np.shape(Etot0_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
-        assert np.shape(Etot0_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
-
         # calculate 2D LCTs
         dX_out, dY_out, out_signal_2d_x = rslct.apply_lct_2d_sep(
             abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_x
@@ -118,10 +99,6 @@ def _prop_abcd_lct(laser_pulse, abcd_mat, l_scale):
         dX_out, dY_out, out_signal_2d_y = rslct.apply_lct_2d_sep(
             abcd_mat_cryst, abcd_mat_cryst, in_signal_2d_y
         )
-
-        assert np.shape(out_signal_2d_x) == np.shape(
-            out_signal_2d_y
-        ), "ERROR -- x and y output not equal"
 
         re_out_signal_2d_x = np.real(out_signal_2d_x)
         x_total = (np.shape(re_out_signal_2d_x)[0] - 1) * dX_out
@@ -159,25 +136,55 @@ def _prop_abcd_lct(laser_pulse, abcd_mat, l_scale):
         # we assume same mesh for both components of E_field
         hx = dX_out * l_scale
         hy = dY_out * l_scale
-
         ny, nx = np.shape(out_signal_2d_x)
-
-        assert np.shape(out_signal_2d_x)[0] % 2 != 0, "ERROR -- nx is even"
-        assert np.shape(out_signal_2d_x)[1] % 2 != 0, "ERROR -- ny is even"
-
         local_xv = rslct.lct_abscissae(nx, hx)
         local_yv = rslct.lct_abscissae(ny, hy)
 
         # remake the wavefront
-        thisSlice.wfr = srwutil.make_wavefront(
+        wfr_new = srwutil.make_wavefront(
             np.real(out_signal_2d_x),
             np.imag(out_signal_2d_x),
             np.real(out_signal_2d_y),
             np.imag(out_signal_2d_y),
-            thisSlice.photon_e_ev,
+            photon_e_ev,
             np.linspace(np.min(local_xv), np.max(local_xv), nx),
             np.linspace(np.min(local_xv), np.max(local_xv), ny),
         )
+
+        return wfr_new
+
+    hc_ev_um = 1.23984198  # hc [eV*um]
+    for j in np.arange(nslices_pulse):
+        thisSlice = laser_pulse.slice[j]
+
+        phLambda = hc_ev_um / thisSlice.photon_e_ev * 1e-6
+        abcd_mat_cryst = np.array(
+            [
+                [abcd_mat.A, abcd_mat.B * phLambda / (l_scale**2)],
+                [abcd_mat.C / phLambda * (l_scale**2), abcd_mat.D],
+            ]
+        )
+
+        wfr0 = thisSlice.wfr
+        thisSlice.wfr = _wfr_prop_abcd_lct(
+            abcd_mat_cryst, l_scale, thisSlice.photon_e_ev, wfr0
+        )
+
+        for k in np.arange(thisSlice.bw_nslice):
+            thisSubSlice = thisSlice.bandwidth_slice[k]
+
+            phLambda = hc_ev_um / thisSubSlice.photon_e_ev * 1e-6
+            abcd_mat_cryst = np.array(
+                [
+                    [abcd_mat.A, abcd_mat.B * phLambda / (l_scale**2)],
+                    [abcd_mat.C / phLambda * (l_scale**2), abcd_mat.D],
+                ]
+            )
+
+            wfr0 = thisSubSlice.wfr
+            thisSubSlice.wfr = _wfr_prop_abcd_lct(
+                abcd_mat_cryst, l_scale, thisSubSlice.photon_e_ev, wfr0
+            )
 
     laser_pulse.resize_laser_mesh()
     return laser_pulse
@@ -186,11 +193,7 @@ def _prop_abcd_lct(laser_pulse, abcd_mat, l_scale):
 def _split_beam(laser_pulse, transmitted_fraction):
     # Assume no loss to reflective layer absorption
 
-    for i in np.arange(laser_pulse.nslice):
-
-        thisSlice = laser_pulse.slice[i]
-        wfr0 = thisSlice.wfr
-        init_n_photons = thisSlice.n_photons_2d.mesh
+    def _wfr_split_beam(photon_e_ev, transmitted_fraction, wfr0):
 
         intensity_2d = srwutil.calc_int_from_elec(wfr0)
         phase_1d = srwlib.array("d", [0] * wfr0.mesh.nx * wfr0.mesh.ny)
@@ -201,7 +204,6 @@ def _split_beam(laser_pulse, transmitted_fraction):
             .astype(np.float64)
         )
 
-        thisSlice.n_photons_2d.mesh = init_n_photons * transmitted_fraction
         split_intensity = intensity_2d * transmitted_fraction
 
         split_e_norm = np.sqrt(2.0 * split_intensity / (const.c * const.epsilon_0))
@@ -210,18 +212,31 @@ def _split_beam(laser_pulse, transmitted_fraction):
         new_re0_ey = np.zeros(np.shape(new_re0_ex))
         new_im0_ey = np.zeros(np.shape(new_im0_ex))
 
-        x = np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx)
-        y = np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny)
-
         # remake the wavefront
-        thisSlice.wfr = srwutil.make_wavefront(
+        wfr_new = srwutil.make_wavefront(
             new_re0_ex,
             new_im0_ex,
             new_re0_ey,
             new_im0_ey,
-            thisSlice.photon_e_ev,
-            x,
-            y,
+            photon_e_ev,
+            np.linspace(wfr0.mesh.xStart, wfr0.mesh.xFin, wfr0.mesh.nx),
+            np.linspace(wfr0.mesh.yStart, wfr0.mesh.yFin, wfr0.mesh.ny),
         )
+
+        return wfr_new
+
+    for j in np.arange(laser_pulse.nslice):
+        thisSlice = laser_pulse.slice[j]
+        thisSlice.n_photons_2d.mesh *= transmitted_fraction
+        thisSlice.wfr = _wfr_split_beam(
+            thisSlice.photon_e_ev, transmitted_fraction, thisSlice.wfr
+        )
+
+        for k in np.arange(thisSlice.bw_nslice):
+            thisSubSlice = thisSlice.bandwidth_slice[k]
+            thisSubSlice.n_photons_2d.mesh *= transmitted_fraction
+            thisSubSlice.wfr = _wfr_split_beam(
+                thisSubSlice.photon_e_ev, transmitted_fraction, thisSubSlice.wfr
+            )
 
     return laser_pulse
