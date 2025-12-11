@@ -1,18 +1,17 @@
-# -*- coding: utf-8 -*-
 """Front-end command line for :mod:`rslaser`.
 
 See :mod:`pykern.pkcli` for how this module is used.
 
-:copyright: Copyright (c) 2020 RadiaSoft LLC.  All Rights Reserved.
-:license: http://www.apache.org/licenses/LICENSE-2.0.html
+:copyright: Copyright (c) 2025 RadiaSoft LLC.  All Rights Reserved.
+:license: https://www.apache.org/licenses/LICENSE-2.0.html
 """
-from __future__ import absolute_import, division, print_function
-from pykern import pkcli
+
+import pykern.pkcli
 import sys
 
 
 def main():
-    return pkcli.main("rslaser")
+    return pykern.pkcli.main("rslaser")
 
 
 if __name__ == "__main__":
