@@ -1,0 +1,40 @@
+[build-system]
+requires = ["chronver", "setuptools>=66"]
+build-backend = "setuptools.build_meta"
+
+[project]
+authors = [
+    { name = "RadiaSoft LLC", email = "pip@radiasoft.net" },
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: English",
+    "Programming Language :: Python",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "rsmath@git+https://github.com/radiasoft/rsmath.git",
+    "matplotlib",
+    "numpy",
+    "pykern",
+    "scipy",
+]
+description = "A Python library for modeling chirped pulse amplifiers in high-power short-pulse lasers"
+dynamic = ["version"]
+name = "rslaser"
+readme = "README.md"
+
+[project.scripts]
+rslaser = "rslaser.rslaser_console:main"
+
+[project.urls]
+Homepage = "https://git.radiasoft.org/rslaser"
+
+[tool.setuptools.package-data]
+rslaser = ["package_data/**"]
+
+[tool.setuptools.packages.find]
+include = ["rslaser*"]
